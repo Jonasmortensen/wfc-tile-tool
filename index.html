@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WFC Socket Tool</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <header>
+      <h1>WFC Socket Tool</h1>
+      <span id="fileLabel" class="muted">No FBX loaded</span>
+      <span class="spacer"></span>
+      <button id="importBtn" title="Reuse socket IDs from an existing JSON">Import JSON…</button>
+      <button id="exportBtn" class="primary" disabled>Export JSON</button>
+      <input type="file" id="fbxInput" accept=".fbx" hidden />
+      <input type="file" id="jsonInput" accept=".json,application/json" hidden />
+    </header>
+    <main>
+      <aside id="sidebar">
+        <section id="dropZone" class="drop">
+          <strong>Drop an FBX here</strong>
+          <span class="muted">(or a JSON to import IDs)</span>
+          <button id="browseBtn">Browse…</button>
+        </section>
+        <section>
+          <h2>Settings</h2>
+          <div id="settings"></div>
+        </section>
+        <section id="importInfo"></section>
+        <section>
+          <details id="help" open>
+            <summary>Help &amp; Unity rules</summary>
+            <div class="help">
+              <h3>Matching</h3>
+              <p>Two tiles may be neighbours when the socket on one side equals the <em>reversed</em> socket on the facing side (<code>ewf</code> ↔ <code>fwe</code>, <code>f</code> ↔ <code>f</code>).</p>
+              <h3>Unity rotation rule</h3>
+              <blockquote>Rotating a prototype k quarter turns clockwise viewed from above: horizontal sockets move posX -&gt; negZ -&gt; negX -&gt; posZ -&gt; posX (k steps). For posY and negY of the form XrX, set r = (r + k) % period[X]. Single-character vertical sockets are unchanged.</blockquote>
+              <p>One clockwise quarter turn (viewed from above, +X toward −Z) is <code>Quaternion.Euler(0, 90, 0)</code> in Unity.</p>
+              <h3>Horizontal profiles</h3>
+              <p>Points are plotted as seen from <em>outside</em> the tile looking at the face: u left to right, v up. Facing neighbours are then mirror images, so string reversal is the inverse. Symmetric profiles get palindromes; an asymmetric profile and its mirror get reversed strings.</p>
+              <h3>Vertical profiles</h3>
+              <p>Top and bottom are plotted in Unity world (x, z) from above. Profiles equal under 90° rotation share a base letter; <code>r</code> counts clockwise quarter turns from the canonical form. Period 1 sockets are a single letter.</p>
+              <h3>Axes</h3>
+              <p>All face names use Unity axes after the axis mapping. Check the coloured axis labels in the preview against Unity's scene view.</p>
+            </div>
+          </details>
+        </section>
+      </aside>
+      <div id="content">
+        <div class="top">
+          <div id="previewWrap">
+            <div id="preview"></div>
+            <div id="previewInfo"></div>
+            <div id="legend"></div>
+          </div>
+          <div id="meshes" class="panel"></div>
+        </div>
+        <section id="warnings" class="panel"></section>
+        <section id="idTables" class="panel"></section>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
