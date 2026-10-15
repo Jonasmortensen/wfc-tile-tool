@@ -54,6 +54,14 @@ export function validateMapping(m: AxisMapping): string | null {
   return null;
 }
 
+/** Determinant of the mapping (+1 or -1); -1 means it mirrors. */
+export function mappingDeterminant(m: AxisMapping): number {
+  const [a, b, c] = [m.x.axis, m.y.axis, m.z.axis];
+  // Parity of the permutation (a, b, c) of (0, 1, 2).
+  const parity = (b - a) * (c - a) * (c - b) > 0 ? 1 : -1;
+  return parity * m.x.sign * m.y.sign * m.z.sign;
+}
+
 export function fileToUnity(p: Readonly<Vec3>, m: AxisMapping): Vec3 {
   return [m.x.sign * p[m.x.axis], m.y.sign * p[m.y.axis], m.z.sign * p[m.z.axis]];
 }

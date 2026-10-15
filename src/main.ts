@@ -20,7 +20,9 @@ import {
   importProposals,
   meshSockets,
   parseImport,
-  verticalPeriods,
+  EMPTY_NAME,
+  meshLabel,
+  sameOriginHeights,
   verticalSocket,
   type Analysis,
   type ExportJson,
@@ -31,9 +33,11 @@ import {
 } from './core/analysis';
 import { readUnitScaleFactor } from './core/fbxUnits';
 import { checkHId, checkVBase, reverseString } from './core/ids';
-import { ALL_FACES, H_FACES, OPPOSITE, type Face } from './core/profile';
+import { ALL_FACES, H_FACES, OPPOSITE, rotatePoint, type Face } from './core/profile';
 import { plotH, plotV } from './ui/plots';
-import { FACE_COLORS, Preview } from './ui/preview';
+import { BACK_FACE_COLOR, FACE_COLORS, Preview } from './ui/preview';
+import { SolutionView, protoColor } from './ui/solution';
+import { buildVariants, solveWfc, type WfcResult } from './core/wfc';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -58,9 +62,22 @@ const state = {
   idError: '',
   loadError: '',
   unitNote: '',
+  /** Add the format's empty tiles (mesh_name "-1"), outside and inside air, to the prototypes. */
+  emptyTile: false,
+  wfc: {
+    size: [10, 3, 10] as [number, number, number],
+    seed: 1,
+    /** Boundary sockets; empty means unconstrained. */
+    outer: '',
+    bottom: '',
+    top: '',
+    result: null as WfcResult | null,
+    ms: 0,
+  },
 };
 
 const preview = new Preview($('preview'));
+const solutionView = new SolutionView($('wfcView'), $('wfcTooltip'), (mesh) => selectMesh(mesh));
 
 // ---------------------------------------------------------------- loading
 
@@ -101,10 +118,16 @@ async function loadFbx(file: File) {
         positions[i * 3 + 2] = v.z;
       }
       const origin = new THREE.Vector3().setFromMatrixPosition(mesh.matrixWorld);
+      // A mirroring transform (negative scale) reverses the winding; undo it so normals stay true.
+      let index: number[] | null = geom.index ? Array.from(geom.index.array) : null;
+      if (mesh.matrixWorld.determinant() < 0) {
+        index ??= Array.from({ length: attr.count }, (_, i) => i);
+        for (let t = 0; t + 2 < index.length; t += 3) [index[t + 1], index[t + 2]] = [index[t + 2], index[t + 1]];
+      }
       raws.push({
         name: mesh.name || mesh.parent?.name || `Mesh${raws.length}`,
         positions,
-        index: geom.index ? Array.from(geom.index.array) : null,
+        index,
         origin: [origin.x, origin.y, origin.z],
       });
     });
@@ -125,11 +148,38 @@ async function loadFbx(file: File) {
     state.weights = raws.map((r) => importedWeight(r.name) ?? 1);
     state.selected = 0;
     state.loadError = '';
+    // Meshes whose origins sit at different heights are stacked tiles: turn top/bottom sockets on by default.
+    if (!validateMapping(state.settings.axis) && !sameOriginHeights(raws, state.settings)) {
+      state.settings.vertical = true;
+      $<HTMLInputElement>('vertical').checked = true;
+    }
     recompute(true);
   } catch (e) {
     state.loadError = `Could not load ${file.name}: ${(e as Error).message}`;
     render(false);
   }
+}
+
+/** The format's empty tile: air or interior, nothing is built for it. */
+const EMPTY_TILES: RawMesh[] = (['o', 'i'] as const).map((emptySpace) => ({
+  name: EMPTY_NAME,
+  positions: [],
+  index: null,
+  origin: [0, 0, 0],
+  emptySpace,
+}));
+
+/** Meshes to analyse: the FBX's, plus the empty tile when enabled. */
+function tileRaws(): RawMesh[] {
+  return state.emptyTile ? [...state.raws, ...EMPTY_TILES] : state.raws;
+}
+
+function importedTags(name: string): string[] | undefined {
+  return state.imported?.prototypes.find((p) => p.mesh_name === name)?.tags;
+}
+
+function exportJson(a: Analysis): ExportJson {
+  return buildExport(a, state.ids, state.weights, state.settings.vertical, a.meshes.map((m) => importedTags(m.name)));
 }
 
 function importedWeight(name: string): number | undefined {
@@ -140,7 +190,7 @@ async function loadJson(file: File) {
   try {
     state.imported = parseImport(await file.text());
     state.importedName = file.name;
-    state.raws.forEach((r, i) => {
+    tileRaws().forEach((r, i) => {
       const w = importedWeight(r.name);
       if (w !== undefined) state.weights[i] = w;
     });
@@ -167,7 +217,9 @@ function recompute(resetView: boolean) {
     render(resetView);
     return;
   }
-  const a = analyze(state.raws, state.settings);
+  const raws = tileRaws();
+  raws.forEach((r, i) => (state.weights[i] ??= importedWeight(r.name) ?? 1));
+  const a = analyze(raws, state.settings);
   const imp = state.imported ? importProposals(a, state.imported) : { h: new Map(), v: new Map(), origin: new Map() };
   // Priority: user renames > imported JSON > previous IDs (keeps IDs stable across setting changes) > automatic.
   const res = computeIds(a, [state.renamesH, imp.h, state.ids.h], [state.renamesV, imp.v, state.ids.v]);
@@ -253,6 +305,9 @@ function buildSettings() {
       <div class="hint error-text" id="axisError"></div>
       <label for="vertical">Vertical</label>
       <label class="row"><input type="checkbox" id="vertical"> posY / negY sockets</label>
+      <div class="hint">Off: Unity infers top and bottom from the sides (posX|negZ|negX|posZ), which assumes straight prisms.</div>
+      <label for="emptyTile">Empty tile</label>
+      <label class="row"><input type="checkbox" id="emptyTile"> add "-1" outside and inside air</label>
     </div>`;
   syncSettingsInputs();
 
@@ -273,9 +328,10 @@ function buildSettings() {
     s.pivot = $<HTMLSelectElement>('pivot').value as Settings['pivot'];
     s.ignoreTranslation = $<HTMLInputElement>('ignoreTranslation').checked;
     s.vertical = $<HTMLInputElement>('vertical').checked;
+    state.emptyTile = $<HTMLInputElement>('emptyTile').checked;
     recompute(true);
   };
-  for (const id of ['cellX', 'cellY', 'cellZ', 'epsilon', 'scale', 'pivot', 'ignoreTranslation', 'vertical']) {
+  for (const id of ['cellX', 'cellY', 'cellZ', 'epsilon', 'scale', 'pivot', 'ignoreTranslation', 'vertical', 'emptyTile']) {
     $(id).addEventListener('change', onChange);
   }
   $('axisPreset').addEventListener('change', () => {
@@ -307,7 +363,7 @@ function syncSettingsInputs(preset: AxisPresetId = presetForMapping(state.settin
 // ---------------------------------------------------------------- rendering
 
 function faceLabel(ref: FaceRef): string {
-  return `${state.analysis!.meshes[ref.mesh].name}.${ref.face}`;
+  return `${meshLabel(state.analysis!.meshes[ref.mesh])}.${ref.face}`;
 }
 
 function currentSockets() {
@@ -336,16 +392,17 @@ function render(resetView: boolean) {
       ? `<h2>Warnings</h2><ul>${errs.map((e) => `<li class="error">${esc(e)}</li>`).join('')}</ul>`
       : `<h2>Warnings</h2><div class="muted">Nothing loaded.</div>`;
     $('idTables').innerHTML = '';
+    solveAndRender(resetView);
     return;
   }
 
   const sockets = currentSockets();
-  const periods = state.settings.vertical ? verticalPeriods(a, state.ids) : {};
-  const unmatched = findUnmatchedFaces(sockets, periods);
+  const unmatched = findUnmatchedFaces(sockets);
   renderMeshes(sockets, unmatched);
   renderWarnings(sockets, unmatched);
   renderIdTables();
   renderPreview(resetView);
+  solveAndRender(resetView);
 }
 
 function renderPreview(resetView: boolean) {
@@ -354,19 +411,19 @@ function renderPreview(resetView: boolean) {
   preview.show(m, state.raws[state.selected]?.index, state.settings, resetView);
   const fmt = (v: number[]) => v.map((x) => +x.toFixed(3)).join(', ');
   $('previewInfo').innerHTML = m
-    ? `<strong>${esc(m.name)}</strong> · ${m.positions.length / 3} verts` +
+    ? `<strong>${esc(meshLabel(m))}</strong> · ${m.positions.length / 3} verts` +
       (m.bounds ? `<br>bounds (${fmt(m.bounds.min)}) – (${fmt(m.bounds.max)})` : '')
     : '';
   $('legend').innerHTML = ALL_FACES.filter((f) => state.settings.vertical || H_FACES.includes(f as never))
     .map((f) => `<span><span class="swatch" style="background:${FACE_COLORS[f]}"></span>${f}</span>`)
-    .join('');
+    .join('') + `<span><span class="swatch" style="background:#${BACK_FACE_COLOR.toString(16).padStart(6, '0')}"></span>back face</span>`;
 }
 
 function renderMeshes(sockets: ReturnType<typeof currentSockets>, unmatched: FaceRef[]) {
   const a = state.analysis!;
   const faces: Face[] = state.settings.vertical ? [...ALL_FACES] : [...H_FACES];
   const counts = new Map<string, number>();
-  for (const m of a.meshes) counts.set(m.name, (counts.get(m.name) ?? 0) + 1);
+  for (const m of a.meshes) if (m.name !== EMPTY_NAME) counts.set(m.name, (counts.get(m.name) ?? 0) + 1);
   const bad = new Set(unmatched.map((u) => `${u.mesh}:${u.face}`));
   $('meshes').innerHTML = `
     <h2>Meshes</h2>
@@ -378,11 +435,17 @@ function renderMeshes(sockets: ReturnType<typeof currentSockets>, unmatched: Fac
         .map(
           (m, i) => `
         <tr class="mesh-row${i === state.selected ? ' selected' : ''}" data-mesh="${i}">
-          <td class="${counts.get(m.name)! > 1 ? 'name-dup' : ''}">${esc(m.name)}${m.outsideCount ? ' ⚠' : ''}</td>
+          <td class="${(counts.get(m.name) ?? 0) > 1 ? 'name-dup' : ''}">${esc(meshLabel(m))}${m.outsideCount ? ' ⚠' : ''}</td>
           ${faces
             .map((f) => {
               const isBad = bad.has(`${i}:${f}`);
-              return `<td class="sock${isBad ? ' bad' : ''}" title="${isBad ? 'No tile in any rotation can sit on this side' : f}">${esc(sockets[i][f] ?? '')}</td>`;
+              const open = m.faces[f].open;
+              const title = isBad
+                ? 'No tile in any rotation can sit on this side'
+                : open
+                  ? `${f}: open (only a surface facing out of the cell), matches an empty face`
+                  : f;
+              return `<td class="sock${isBad ? ' bad' : ''}${open ? ' open' : ''}" title="${title}">${esc(sockets[i][f] ?? '')}</td>`;
             })
             .join('')}
           <td><input type="number" class="weight" data-mesh="${i}" min="0" step="any" value="${state.weights[i] ?? 1}"></td>
@@ -399,7 +462,8 @@ function renderWarnings(sockets: ReturnType<typeof currentSockets>, unmatched: F
   if (state.loadError) items.push({ level: 'error', text: state.loadError });
 
   const counts = new Map<string, number>();
-  for (const m of a.meshes) counts.set(m.name, (counts.get(m.name) ?? 0) + 1);
+  // The two empty tiles share "-1" on purpose.
+  for (const m of a.meshes) if (m.name !== EMPTY_NAME) counts.set(m.name, (counts.get(m.name) ?? 0) + 1);
   for (const [name, n] of counts) {
     if (n > 1) items.push({ level: 'error', text: `Duplicate mesh name "${name}" (${n} meshes).` });
   }
@@ -424,7 +488,10 @@ function renderWarnings(sockets: ReturnType<typeof currentSockets>, unmatched: F
     const id = sockets[u.mesh][u.face]!;
     items.push({
       level: 'warn',
-      text: `${faceLabel(u)} ("${id}") has no possible neighbour: no tile in any rotation has ${OPPOSITE[u.face]} = "${reverseString(id)}".`,
+      text:
+        u.face === 'posY' || u.face === 'negY'
+          ? `${faceLabel(u)} ("${id}") has nothing to stack against: no tile in any rotation has ${OPPOSITE[u.face]} = "${id}" (given or inferred from its sides). Fine only if it is the stack's ${u.face === 'negY' ? 'bottom' : 'top'} socket.`
+          : `${faceLabel(u)} ("${id}") has no possible neighbour: no tile in any rotation has ${OPPOSITE[u.face]} = "${reverseString(id)}".`,
     });
   }
   for (const msg of state.importMessages) items.push({ level: 'warn', text: msg });
@@ -463,8 +530,8 @@ function renderIdTables() {
       const edges = a.meshes[p.usage[0].mesh].faces[face].edges;
       const mirrorEdges = edges.map(([e0, e1]) => [[0 - e0[0], e0[1]], [0 - e1[0], e1[1]]] as const);
       return `<tr>
-        <td>${plotH(p.profile.points, edges, eps, width, sy, '#4aa3ff')}</td>
-        <td>${p.symmetric ? '<span class="muted">same</span>' : plotH(p.mirror.points, mirrorEdges, eps, width, sy, '#b07cff')}</td>
+        <td>${plotH(p.profile, edges, eps, width, sy, '#4aa3ff')}</td>
+        <td>${p.symmetric ? '<span class="muted">same</span>' : plotH(p.mirror, mirrorEdges, eps, width, sy, '#b07cff')}</td>
         <td>${p.symmetric ? 'yes' : 'no'}</td>
         <td><input class="id-input" data-kind="h" data-key="${esc(p.key)}" value="${esc(id)}"></td>
         <td class="id-mono">${p.symmetric ? '<span class="muted">(itself)</span>' : esc(state.ids.h.get(p.mirror.key)!)}</td>
@@ -479,9 +546,12 @@ function renderIdTables() {
       .map((p) => {
         const base = state.ids.v.get(p.classKey)!;
         const cls = a.vClasses.get(p.classKey)!;
+        // Edges come from the first face using the profile; turning them back r quarter turns gives the canonical form.
+        const edges = a.meshes[p.usage[0].mesh].faces[p.usage[0].face].edges;
+        const canonicalEdges = edges.map((e) => [rotatePoint(e[0], -p.r), rotatePoint(e[1], -p.r)] as const);
         return `<tr>
-          <td>${plotV(p.profile.points, eps, sx, sz, '#3ddc84')}</td>
-          <td>${plotV(cls.canonical.points, eps, sx, sz, '#f5d142')}</td>
+          <td>${plotV(p.profile, edges, eps, sx, sz, '#3ddc84')}</td>
+          <td>${plotV(cls.canonical, canonicalEdges, eps, sx, sz, '#f5d142')}</td>
           <td>${p.period}</td>
           <td><input class="id-input" data-kind="v" data-key="${esc(p.classKey)}" value="${esc(base)}" maxlength="2"></td>
           <td class="id-mono">${esc(verticalSocket(a, state.ids, p.key))}</td>
@@ -501,23 +571,134 @@ function renderIdTables() {
   $('idTables').innerHTML = `
     <div class="id-error" id="idError">${esc(state.idError)}</div>
     <h2>Horizontal profiles</h2>
+    <div class="muted plot-key">Lines are mesh edges in the face plane. Squares mark surfaces lying in the face: filled ■ faces out of the cell, hollow □ faces into it. Dotted ticks show which way the front of a surface meeting the face edge-on (a wall) points. Shaded areas are inside (behind a surface), unshaded outside. Tiles only match back to back, so a roof (out) and a ground (in) on the same outline get different sockets, and a wall only continues a wall facing the same way.</div>
     <table>
-      <thead><tr><th>Profile (from outside)</th><th>Mirror</th><th>Symmetric</th><th>ID</th><th>Mirror ID</th><th>Faces (profile / mirror)</th></tr></thead>
+      <thead><tr><th>Profile (from inside)</th><th>Mirror</th><th>Symmetric</th><th>ID</th><th>Mirror ID</th><th>Faces (profile / mirror)</th></tr></thead>
       <tbody>${hRows}</tbody>
     </table>
     ${vSection}`;
 }
 
+// ---------------------------------------------------------------- WFC preview
+
+/** Suggestions for the boundary socket inputs: every side and every top/bottom socket in use. */
+function fillSocketLists(variants: ReturnType<typeof buildVariants>) {
+  const sides = new Set<string>();
+  const faces = new Set<string>();
+  for (const v of variants) {
+    for (const f of H_FACES) sides.add(v.sockets[f]);
+    faces.add(v.sockets.posY).add(v.sockets.negY);
+  }
+  const opts = (set: Set<string>) => [...set].sort().map((id) => `<option value="${esc(id)}">`).join('');
+  $('wfcSides').innerHTML = opts(sides);
+  $('wfcFaces').innerHTML = opts(faces);
+}
+
+/** Run WFC on the current sockets (as exported) and show the result. */
+function solveAndRender(resetView: boolean) {
+  const a = state.analysis;
+  $<HTMLButtonElement>('wfcNewSeed').disabled = !a;
+  const status = $('wfcStatus');
+  if (!a) {
+    state.wfc.result = null;
+    solutionView.show(null, [], [], state.settings, resetView);
+    status.className = 'muted';
+    status.textContent = 'Load an FBX to run WFC on its sockets.';
+    $('wfcLegend').innerHTML = '';
+    return;
+  }
+  const variants = buildVariants(exportJson(a).prototypes);
+  fillSocketLists(variants);
+  const { size, seed, outer, bottom, top } = state.wfc;
+  const start = performance.now();
+  const res = solveWfc(variants, { size, seed, outer, bottom, top });
+  state.wfc.ms = performance.now() - start;
+  state.wfc.result = res;
+  solutionView.show(res, a.meshes, tileRaws().map((r) => r.index), state.settings, resetView);
+
+  const time = `${state.wfc.ms.toFixed(0)} ms`;
+  if (res.ok) {
+    status.className = 'ok';
+    status.textContent = `Solved with ${variants.length} variants (${res.attempts} attempt${res.attempts > 1 ? 's' : ''}, ${time}).`;
+  } else {
+    status.className = 'error';
+    status.textContent =
+      `No solution after ${res.attempts} attempts (${time}). The red cell is where the last attempt ran out of tiles; ` +
+      'check the warnings and the boundary sockets.';
+  }
+  const placed = new Map<number, number>();
+  for (const v of res.cells) if (v >= 0) placed.set(res.variants[v].proto, (placed.get(res.variants[v].proto) ?? 0) + 1);
+  $('wfcLegend').innerHTML = a.meshes
+    .map(
+      (m, i) =>
+        `<span><span class="swatch" style="background:#${protoColor(i).getHexString()}"></span>${esc(meshLabel(m))} <span class="count">${placed.get(i) ?? 0}</span></span>`,
+    )
+    .join('');
+}
+
+function readWfcInputs(): boolean {
+  const int = (id: string, max: number) => {
+    const el = $<HTMLInputElement>(id);
+    const v = Number(el.value);
+    const ok = Number.isInteger(v) && v >= 1 && v <= max;
+    el.classList.toggle('invalid', !ok);
+    return ok ? v : null;
+  };
+  const x = int('wfcX', 32);
+  const y = int('wfcY', 8);
+  const z = int('wfcZ', 32);
+  const seedEl = $<HTMLInputElement>('wfcSeed');
+  const seed = Number(seedEl.value);
+  const seedOk = seedEl.value !== '' && Number.isInteger(seed) && seed >= 0;
+  seedEl.classList.toggle('invalid', !seedOk);
+  if (x === null || y === null || z === null || !seedOk) return false;
+  state.wfc.size = [x, y, z];
+  state.wfc.seed = seed;
+  state.wfc.outer = $<HTMLInputElement>('wfcOuter').value.trim();
+  state.wfc.bottom = $<HTMLInputElement>('wfcBottom').value.trim();
+  state.wfc.top = $<HTMLInputElement>('wfcTop').value.trim();
+  return true;
+}
+
+for (const id of ['wfcX', 'wfcY', 'wfcZ', 'wfcSeed', 'wfcOuter', 'wfcBottom', 'wfcTop']) {
+  $(id).addEventListener('change', () => {
+    if (readWfcInputs()) solveAndRender(['wfcX', 'wfcY', 'wfcZ'].includes(id));
+  });
+}
+$('wfcCull').addEventListener('change', () => solutionView.setCullBackFaces($<HTMLInputElement>('wfcCull').checked));
+$('wfcNewSeed').addEventListener('click', () => {
+  $<HTMLInputElement>('wfcSeed').value = String(Math.floor(Math.random() * 1e6));
+  if (readWfcInputs()) solveAndRender(false);
+});
+
 // ---------------------------------------------------------------- events
+
+/** Show a mesh in the tile preview and highlight its row, scrolling the mesh table (not the page) to it. */
+function selectMesh(mesh: number) {
+  state.selected = mesh;
+  let row: HTMLElement | null = null;
+  document.querySelectorAll<HTMLElement>('tr.mesh-row').forEach((r) => {
+    const hit = Number(r.dataset.mesh) === mesh;
+    r.classList.toggle('selected', hit);
+    if (hit) row = r;
+  });
+  const panel = $('meshes');
+  const r = row as HTMLElement | null;
+  if (r) {
+    const top = r.offsetTop - panel.offsetTop;
+    const header = panel.querySelector('thead')?.offsetHeight ?? 0;
+    if (top - header < panel.scrollTop || top + r.offsetHeight > panel.scrollTop + panel.clientHeight) {
+      panel.scrollTop = top - header - (panel.clientHeight - header - r.offsetHeight) / 2;
+    }
+  }
+  renderPreview(false);
+}
 
 $('meshes').addEventListener('click', (e) => {
   const target = e.target as HTMLElement;
   if (target.closest('input')) return;
   const row = target.closest<HTMLElement>('tr.mesh-row');
-  if (!row) return;
-  state.selected = Number(row.dataset.mesh);
-  document.querySelectorAll('tr.mesh-row').forEach((r) => r.classList.toggle('selected', r === row));
-  renderPreview(false);
+  if (row) selectMesh(Number(row.dataset.mesh));
 });
 
 $('meshes').addEventListener('change', (e) => {
@@ -526,7 +707,10 @@ $('meshes').addEventListener('change', (e) => {
   const v = Number(input.value);
   const ok = input.value !== '' && Number.isFinite(v) && v >= 0;
   input.classList.toggle('invalid', !ok);
-  if (ok) state.weights[Number(input.dataset.mesh)] = v;
+  if (ok) {
+    state.weights[Number(input.dataset.mesh)] = v;
+    solveAndRender(false);
+  }
 });
 
 $('idTables').addEventListener('change', (e) => {
@@ -548,7 +732,7 @@ $('idTables').addEventListener('keydown', (e) => {
 $('exportBtn').addEventListener('click', () => {
   const a = state.analysis;
   if (!a) return;
-  const text = exportText(buildExport(a, state.ids, state.weights, state.settings.vertical));
+  const text = exportText(exportJson(a));
   const url = URL.createObjectURL(new Blob([text + '\n'], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;

@@ -54,6 +54,7 @@ export function checkHId(
 ): string | null {
   if (!id) return 'ID cannot be empty.';
   if (/\s/.test(id)) return 'ID cannot contain whitespace.';
+  if (id.includes('|')) return 'Side IDs cannot contain "|"; it separates the parts of top and bottom faces.';
   if (symmetric && !isPalindrome(id)) {
     return `"${id}" is not a palindrome. Symmetric profiles need an ID that reads the same reversed.`;
   }
@@ -129,7 +130,7 @@ export function assignHorizontalIds(
 
 export function checkVBase(base: string, selfKey: string, owner: ReadonlyMap<string, string>): string | null {
   if ([...base].length !== 1) return 'Vertical IDs must be a single character.';
-  if (/[\s0-9]/.test(base)) return 'Vertical IDs cannot be a digit or whitespace.';
+  if (/[\s0-9|]/.test(base)) return 'Vertical IDs cannot be a digit, whitespace or "|".';
   const o = owner.get(base);
   if (o !== undefined && o !== selfKey) return `"${base}" is already used by another vertical profile class.`;
   return null;
@@ -172,14 +173,27 @@ export function assignVerticalBases(
   return { bases, rejected };
 }
 
+/**
+ * A top or bottom face socket in the prototype format. A face that looks the
+ * same in every rotation is one part ("A"). Otherwise it has four parts in the
+ * order posX|negZ|negX|posZ, each the base plus a turn index, chosen so that
+ * the loader's turn (last part to the front) gives the socket of the turned
+ * profile: "B0|B1|B2|B3" turned once is "B3|B0|B1|B2". Period 2 repeats:
+ * "C0|C1|C0|C1".
+ */
 export function encodeVertical(base: string, r: number, period: Period): string {
-  return period === 1 ? base : `${base}${r % period}${base}`;
+  if (period === 1) return base;
+  return [0, 1, 2, 3].map((i) => `${base}${(((i - r) % period) + period) % period}`).join('|');
 }
 
-/** Parse "A" or "B2B". r is null for single-character (period 1) sockets. */
-export function parseVertical(s: string): { base: string; r: number | null } | null {
+/** The base of a face socket written by encodeVertical, or by older versions ("B2B"). */
+export function parseVertical(s: string): { base: string } | null {
   const chars = [...s];
-  if (chars.length === 1 && !/[\s0-9]/.test(chars[0])) return { base: chars[0], r: null };
-  if (chars.length === 3 && chars[0] === chars[2] && /^[0-9]$/.test(chars[1])) return { base: chars[0], r: Number(chars[1]) };
+  if (chars.length === 1 && !/[\s0-9|]/.test(chars[0])) return { base: chars[0] };
+  if (chars.length === 3 && chars[0] === chars[2] && /^[0-9]$/.test(chars[1])) return { base: chars[0] };
+  const parts = s.split('|').map((p) => [...p]);
+  if (parts.length === 4 && parts.every((p) => p.length === 2 && p[0] === parts[0][0] && /^[0-9]$/.test(p[1]))) {
+    return { base: parts[0][0] };
+  }
   return null;
 }

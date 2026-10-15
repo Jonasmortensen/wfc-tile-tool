@@ -33,14 +33,18 @@
             <summary>Help &amp; Unity rules</summary>
             <div class="help">
               <h3>Matching</h3>
-              <p>Two tiles may be neighbours when the socket on one side equals the <em>reversed</em> socket on the facing side (<code>ewf</code> ↔ <code>fwe</code>, <code>f</code> ↔ <code>f</code>).</p>
+              <p>Side neighbours fit when one socket equals the other <em>reversed</em> (<code>io</code> ↔ <code>oi</code>, <code>f</code> ↔ <code>f</code>). A tile fits on top of another when its <code>negY</code> equals the lower tile's <code>posY</code> exactly.</p>
               <h3>Unity rotation rule</h3>
-              <blockquote>Rotating a prototype k quarter turns clockwise viewed from above: horizontal sockets move posX -&gt; negZ -&gt; negX -&gt; posZ -&gt; posX (k steps). For posY and negY of the form XrX, set r = (r + k) % period[X]. Single-character vertical sockets are unchanged.</blockquote>
-              <p>One clockwise quarter turn (viewed from above, +X toward −Z) is <code>Quaternion.Euler(0, 90, 0)</code> in Unity.</p>
-              <h3>Horizontal profiles</h3>
-              <p>Points are plotted as seen from <em>outside</em> the tile looking at the face: u left to right, v up. Facing neighbours are then mirror images, so string reversal is the inverse. Symmetric profiles get palindromes; an asymmetric profile and its mirror get reversed strings.</p>
-              <h3>Vertical profiles</h3>
-              <p>Top and bottom are plotted in Unity world (x, z) from above. Profiles equal under 90° rotation share a base letter; <code>r</code> counts clockwise quarter turns from the canonical form. Period 1 sockets are a single letter.</p>
+              <blockquote>Turn k (Quaternion.Euler(0, 90k, 0), clockwise from above): side sockets move posX -&gt; negZ -&gt; negX -&gt; posZ -&gt; posX unchanged. Top/bottom sockets with 4 or 5 parts move their last side part to the front (a middle part stays last); 1-part faces are unchanged.</blockquote>
+              <h3>Side profiles</h3>
+              <p>Sides are read clockwise as seen from above (posX from +Z to −Z, negZ from +X to −X, …), so they are plotted as seen from <em>inside</em> the tile: u left to right, v up. Facing neighbours read the shared edge in opposite directions, so string reversal is the inverse. Symmetric profiles get palindromes; an asymmetric profile and its mirror get reversed strings. <code>|</code> is not allowed in side IDs.</p>
+              <h3>Top and bottom</h3>
+              <p>Plotted in Unity world (x, z) from above. With Vertical on, profiles equal under 90° rotation share a base letter: a face that looks the same in every rotation is one part (<code>A</code>), otherwise four parts like <code>B0|B1|B2|B3</code> that turn with the tile. With Vertical off, no top/bottom is written and Unity infers <code>posX|negZ|negX|posZ</code> from the sides.</p>
+              <h3>Surface orientation</h3>
+              <p>Points with a surface lying in a face plane also record which way it faces (from the triangle winding): out of the cell or into it. A roof on a tile's top and a ground on the bottom of the tile above share vertices but face the same way, so they would be two surfaces in one place; they get different sockets. Back-to-back surfaces (roof under a ceiling) match. Surfaces meeting a face edge-on (a wall ending at a side or crossing the top) record which way their front points, so a wall only continues or stacks on a wall facing the same way, like the handmade <code>io</code>/<code>oi</code> sockets.</p>
+              <h3>Inside and outside</h3>
+              <p>Each face is also sampled on a 4×4 grid: a sample is <em>outside</em> when the nearest surface seen from it shows its front, <em>inside</em> when it shows its back (inside wins a tie, nothing in reach counts as outside). Where a surface lies in the face, the sample takes the space beyond it, so a roof's top is outside. These labels are part of the socket, like the handmade <code>i</code> and <code>o</code>, so outside space only continues outside space. "Empty tile" adds both an outside and an inside air tile (both <code>-1</code>), so building interiors can be filled.</p>
+              <p>A face whose only surface faces out of the cell (a roof on the top face) is <em>open</em>: the tile is already closed there, so it gets the empty face's socket and air can sit next to it. Open sockets are dotted-underlined in the mesh table. A face that also has geometry crossing it (a wall carrying on upward) stays closed.</p>
               <h3>Axes</h3>
               <p>All face names use Unity axes after the axis mapping. Check the coloured axis labels in the preview against Unity's scene view.</p>
             </div>
@@ -57,6 +61,37 @@
           <div id="meshes" class="panel"></div>
         </div>
         <section id="warnings" class="panel"></section>
+        <section id="wfc" class="panel">
+          <div class="wfc-head">
+            <h2>WFC solution preview</h2>
+            <div class="row">
+              <span class="muted">Grid</span>
+              <input type="number" id="wfcX" min="1" max="32" step="1" value="10" title="X cells">
+              <input type="number" id="wfcY" min="1" max="8" step="1" value="3" title="Y cells (layers)">
+              <input type="number" id="wfcZ" min="1" max="32" step="1" value="10" title="Z cells">
+              <span class="muted">Seed</span>
+              <input type="number" id="wfcSeed" min="0" step="1" value="1">
+              <button id="wfcNewSeed" title="Pick a random seed and solve">New seed</button>
+              <label class="row muted" title="Hide the back side of every face (by the FBX winding), like Unity's default culling"><input type="checkbox" id="wfcCull"> Cull back faces</label>
+            </div>
+            <div class="row">
+              <span class="muted" title="Every side on the edge of the map must equal this socket (unreversed). Empty: any.">Outer</span>
+              <input id="wfcOuter" class="sock-input" list="wfcSides" placeholder="any">
+              <span class="muted" title="Required under layer 0 (exact). Empty: any.">Bottom</span>
+              <input id="wfcBottom" class="sock-input" list="wfcFaces" placeholder="any">
+              <span class="muted" title="Required on top of the highest layer (exact). Empty: any.">Top</span>
+              <input id="wfcTop" class="sock-input" list="wfcFaces" placeholder="any">
+              <datalist id="wfcSides"></datalist>
+              <datalist id="wfcFaces"></datalist>
+            </div>
+            <span id="wfcStatus" class="muted"></span>
+          </div>
+          <div id="wfcWrap">
+            <div id="wfcView"></div>
+            <div id="wfcTooltip"></div>
+          </div>
+          <div id="wfcLegend"></div>
+        </section>
         <section id="idTables" class="panel"></section>
       </div>
     </main>

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { analyze, computeIds, importProposals, parseImport, buildExport, exportText } from './analysis';
+import { analyze, computeIds, importProposals, parseImport, buildExport, exportText, sameOriginHeights } from './analysis';
 import { assignHorizontalIds, checkHId, isPalindrome, reverseString } from './ids';
 import { H_FACES, mirrorH } from './profile';
+import { AXIS_PRESETS } from './axis';
 import { box, rawMesh, unitySettings } from './testUtils';
 
 /** A varied set of tiles: symmetric walls, off-centre ledges, corners and empties. */
@@ -94,6 +95,7 @@ describe('rename validation', () => {
     // Renaming within the same pair is fine.
     expect(checkHId('fwe', false, ['E', 'E*'], owner)).toBeNull();
     expect(checkHId('', true, ['S'], owner)).toMatch(/empty/);
+    expect(checkHId('a|a', true, ['S'], owner)).toMatch(/contain "\|"/);
   });
 });
 
@@ -133,12 +135,35 @@ describe('JSON import and export', () => {
     const { ids } = computeIds(a);
     const json = buildExport(a, ids, a.meshes.map(() => 1), true);
     expect(Object.keys(json.prototypes[0].sockets)).toEqual(['posX', 'negZ', 'negX', 'posZ', 'posY', 'negY']);
-    expect(json.vertical_socket_periods).toBeDefined();
+    expect('vertical_socket_periods' in json).toBe(false);
     expect(exportText(json)).toContain('\n    "prototypes"');
     const flat = buildExport(a, ids, a.meshes.map(() => 2), false);
     expect(Object.keys(flat.prototypes[0].sockets)).toEqual(['posX', 'negZ', 'negX', 'posZ']);
-    expect('vertical_socket_periods' in flat).toBe(false);
     expect(flat.prototypes[0].weight).toBe(2);
+    expect('tags' in flat.prototypes[0]).toBe(false);
+  });
+
+  it('keeps tags and reads a missing weight as 0', () => {
+    const imported = parseImport(
+      JSON.stringify({ prototypes: [{ mesh_name: 'Ledge', sockets: {}, tags: ['LastResort', 3] }] }),
+    );
+    expect(imported.prototypes[0]).toEqual({ mesh_name: 'Ledge', sockets: {}, weight: 0, tags: ['LastResort'] });
+    const { ids } = computeIds(a);
+    const json = buildExport(a, ids, [], false, [, , , ['LastResort']]);
+    expect(json.prototypes[3].tags).toEqual(['LastResort']);
+    expect(json.prototypes[0].tags).toBeUndefined();
   });
 });
 
+describe('sameOriginHeights', () => {
+  it('compares the Unity height of the object origins', () => {
+    const at = (name: string, origin: [number, number, number]) => ({ ...rawMesh(name, []), origin });
+    const s = unitySettings();
+    expect(sameOriginHeights([at('A', [0, 0, 0]), at('B', [3, 0, -2])], s)).toBe(true);
+    expect(sameOriginHeights([at('A', [0, 0, 0]), at('B', [3, 1, 0])], s)).toBe(false);
+    // Z-up file data: file Z is Unity Y.
+    const zup = unitySettings({ axis: AXIS_PRESETS.zup.mapping });
+    expect(sameOriginHeights([at('A', [0, 0, 0]), at('B', [0, 5, 0])], zup)).toBe(true);
+    expect(sameOriginHeights([at('A', [0, 0, 0]), at('B', [0, 0, 5])], zup)).toBe(false);
+  });
+});

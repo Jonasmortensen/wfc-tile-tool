@@ -3,9 +3,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
-import type { Vec3 } from '../core/axis';
+import { mappingDeterminant, type Vec3 } from '../core/axis';
 import type { MeshAnalysis, Settings } from '../core/analysis';
 import { ALL_FACES, FACE_NORMALS, cellBounds, profileToUnity, projectToFace, type Face } from '../core/profile';
+
+export const BACK_FACE_COLOR = 0xc0392b;
 
 export const FACE_COLORS: Record<Face, string> = {
   posX: '#ff5a4f',
@@ -17,7 +19,7 @@ export const FACE_COLORS: Record<Face, string> = {
 };
 
 /** Unity is left-handed (Z forward), three.js right-handed (Z toward viewer): flip Z to display. */
-function u2t(v: Readonly<Vec3>): THREE.Vector3 {
+export function u2t(v: Readonly<Vec3>): THREE.Vector3 {
   return new THREE.Vector3(v[0], v[1], -v[2]);
 }
 
@@ -40,7 +42,7 @@ function label(text: string, color: string, height: number): THREE.Sprite {
   return sprite;
 }
 
-function disposeTree(obj: THREE.Object3D) {
+export function disposeTree(obj: THREE.Object3D) {
   obj.traverse((o) => {
     const m = o as THREE.Mesh;
     m.geometry?.dispose();
@@ -146,19 +148,21 @@ export class Preview {
       geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       if (index) geom.setIndex(Array.from(index));
       geom.computeVertexNormals();
-      // The axis mapping may mirror the mesh, flipping winding, so draw both sides.
-      const solid = new THREE.Mesh(
-        geom,
+      // Front faces follow the file's winding. The axis mapping and the Z flip
+      // to three.js space each mirror (det -1); when only the Z flip does, the
+      // displayed winding is reversed, so swap which side counts as front.
+      const reversed = mappingDeterminant(s.axis) > 0;
+      const material = (color: number, front: boolean) =>
         new THREE.MeshStandardMaterial({
-          color: 0x7d8da3,
-          side: THREE.DoubleSide,
+          color,
+          side: front !== reversed ? THREE.FrontSide : THREE.BackSide,
           flatShading: true,
           polygonOffset: true,
           polygonOffsetFactor: 1,
           polygonOffsetUnits: 1,
-        }),
-      );
-      this.content.add(solid);
+        });
+      // Back faces are tinted red.
+      this.content.add(new THREE.Mesh(geom, material(0x7d8da3, true)), new THREE.Mesh(geom, material(BACK_FACE_COLOR, false)));
       this.content.add(
         new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25), new THREE.LineBasicMaterial({ color: 0x2b3340 })),
       );

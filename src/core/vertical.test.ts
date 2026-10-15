@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { analyze, computeIds, findUnmatchedFaces, meshSockets, rotateSockets, verticalPeriods, type Sockets } from './analysis';
+import {
+  analyze,
+  computeIds,
+  faceSocket,
+  findUnmatchedFaces,
+  meshSockets,
+  rotateFace,
+  rotateSockets,
+  socketsFit,
+  type Sockets,
+} from './analysis';
 import { encodeVertical, parseVertical } from './ids';
 import { classifyVertical, makeProfile, rotateV, rotateVec, type Point2 } from './profile';
 import { box, rawMesh, rotateMesh, unitySettings } from './testUtils';
@@ -44,13 +54,27 @@ describe('vertical rotation', () => {
     expect(encodeVertical('B', a.r, a.period)).not.toBe(encodeVertical('B', b.r, b.period));
   });
 
-  it('encodes and parses', () => {
+  it('encodes in the prototype face format and parses', () => {
     expect(encodeVertical('A', 0, 1)).toBe('A');
-    expect(encodeVertical('B', 3, 4)).toBe('B3B');
-    expect(encodeVertical('C', 3, 2)).toBe('C1C');
-    expect(parseVertical('B3B')).toEqual({ base: 'B', r: 3 });
-    expect(parseVertical('A')).toEqual({ base: 'A', r: null });
+    expect(encodeVertical('B', 0, 4)).toBe('B0|B1|B2|B3');
+    expect(encodeVertical('B', 3, 4)).toBe('B1|B2|B3|B0');
+    expect(encodeVertical('C', 3, 2)).toBe('C1|C0|C1|C0');
+    expect(parseVertical('B1|B2|B3|B0')).toEqual({ base: 'B' });
+    expect(parseVertical('A')).toEqual({ base: 'A' });
+    expect(parseVertical('B3B')).toEqual({ base: 'B' });
     expect(parseVertical('ab')).toBeNull();
+    expect(parseVertical('i|io|o|oi')).toBeNull();
+  });
+
+  it("matches the loader's turn: last side part to the front", () => {
+    expect(rotateFace('i|io|o|oi', 1)).toBe('oi|i|io|o');
+    expect(rotateFace('a|b|c|d|m', 2)).toBe('c|d|a|b|m');
+    expect(rotateFace('g', 3)).toBe('g');
+    for (const period of [2, 4] as const) {
+      for (let r = 0; r < period; r++) {
+        expect(rotateFace(encodeVertical('B', r, period), 1)).toBe(encodeVertical('B', r + 1, period));
+      }
+    }
   });
 });
 
@@ -78,11 +102,10 @@ describe('rotation round-trip', () => {
   const raws = names.flatMap((n) => [0, 1, 2, 3].map((k) => rawMesh(`${n}_r${k}`, rotateMesh(defs[n], k))));
   const a = analyze(raws, unitySettings({ vertical: true }));
   const { ids } = computeIds(a);
-  const periods = verticalPeriods(a, ids);
   const sockets = a.meshes.map((m) => meshSockets(a, ids, m.index, true));
 
   it('covers periods 1, 2 and 4', () => {
-    expect(new Set(Object.values(periods))).toEqual(new Set([1, 2, 4]));
+    expect(new Set([...a.vClasses.values()].map((c) => c.period))).toEqual(new Set([1, 2, 4]));
   });
 
   for (let t = 0; t < names.length; t++) {
@@ -90,7 +113,7 @@ describe('rotation round-trip', () => {
       it(`${names[t]} rotated ${k} quarter turn(s) matches the Unity rule`, () => {
         const original = sockets[t * 4];
         const rotated = sockets[t * 4 + k];
-        expect(rotated).toEqual(rotateSockets(original, k, periods));
+        expect(rotated).toEqual(rotateSockets(original, k));
       });
     }
   }
@@ -98,16 +121,17 @@ describe('rotation round-trip', () => {
   it('flags only faces with no possible neighbour', () => {
     // Every tile is present in all rotations, and each face matches some face of the
     // same set only if its mirror exists; check against brute force.
-    const unmatched = findUnmatchedFaces(sockets, periods);
-    const rotatedAll: Sockets[] = sockets.flatMap((s) => [0, 1, 2, 3].map((k) => rotateSockets(s, k, periods)));
+    const unmatched = findUnmatchedFaces(sockets);
+    const rotatedAll: Sockets[] = sockets.flatMap((s) => [0, 1, 2, 3].map((k) => rotateSockets(s, k)));
     const opposite = { posX: 'negX', negX: 'posX', posZ: 'negZ', negZ: 'posZ', posY: 'negY', negY: 'posY' } as const;
     sockets.forEach((s, mesh) => {
       for (const [face, id] of Object.entries(s) as [keyof typeof opposite, string][]) {
-        const ok = rotatedAll.some((r) => r[opposite[face]] === [...id].reverse().join(''));
+        const o = opposite[face];
+        const ok = rotatedAll.some((r) => socketsFit(face, id, o === 'posY' || o === 'negY' ? faceSocket(r, o) : r[o]!));
         expect(unmatched.some((u) => u.mesh === mesh && u.face === face)).toBe(!ok);
       }
     });
-    // The ledge's posX ("seen from outside") has no mirror partner in this set.
+    // The ledge's posX has no mirror partner in this set.
     const ledge = names.indexOf('Ledge') * 4;
     expect(unmatched.some((u) => u.mesh === ledge && u.face === 'posX')).toBe(true);
     // The column's top matches its own bottom.

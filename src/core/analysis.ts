@@ -1,12 +1,6 @@
-import { AXIS_PRESETS, cloneMapping, fileToUnity, type AxisMapping, type Vec3 } from './axis';
-import {
-  assignHorizontalIds,
-  assignVerticalBases,
-  encodeVertical,
-  parseVertical,
-  reverseString,
-  type Rejection,
-} from './ids';
+import { AXIS_PRESETS, cloneMapping, fileToUnity, mappingDeterminant, type AxisMapping, type Vec3 } from './axis';
+import { faceSpace, type Space } from './space';
+import { assignHorizontalIds, assignVerticalBases, encodeVertical, parseVertical, reverseString, type Rejection } from './ids';
 import {
   ALL_FACES,
   H_FACES,
@@ -16,6 +10,7 @@ import {
   classifyVertical,
   extractFaces,
   faceEdges,
+  faceFacing,
   mirrorH,
   type Cell,
   type Face,
@@ -23,6 +18,7 @@ import {
   type HFace,
   type Period,
   type Pivot,
+  type VFace,
   type Profile,
 } from './profile';
 
@@ -57,6 +53,8 @@ export interface RawMesh {
   index?: ArrayLike<number> | null;
   /** World position of the object, in file axes. */
   origin: Vec3;
+  /** Label for space no surface reaches; 'i' makes an empty mesh inside air. Default 'o'. */
+  emptySpace?: Space;
 }
 
 export interface FaceRef {
@@ -96,6 +94,7 @@ export interface MeshAnalysis {
   faces: Record<Face, FaceSample>;
   outsideCount: number;
   bounds: { min: Vec3; max: Vec3 } | null;
+  emptySpace: Space;
 }
 
 export interface Analysis {
@@ -105,6 +104,14 @@ export interface Analysis {
   hProfiles: Map<string, HProfileInfo>;
   vProfiles: Map<string, VProfileInfo>;
   vClasses: Map<string, VClassInfo>;
+}
+
+/** The format's empty tile name: nothing is built for it. */
+export const EMPTY_NAME = '-1';
+
+/** A mesh's name for display; the two empty tiles share "-1", so say which air each one is. */
+export function meshLabel(m: Pick<MeshAnalysis, 'name' | 'emptySpace'>): string {
+  return m.name === EMPTY_NAME ? `-1 (${m.emptySpace === 'i' ? 'inside' : 'outside'} air)` : m.name;
 }
 
 export function meshToUnity(raw: RawMesh, s: Settings): Float64Array {
@@ -143,10 +150,14 @@ export function analyze(raws: readonly RawMesh[], s: Settings): Analysis {
       }
       if (outside) outsideCount++;
     }
-    const faces = extractFaces(vec3s(positions), cell, eps);
+    const flip = mappingDeterminant(s.axis) < 0;
+    const facing = faceFacing(positions, raw.index, cell, eps, flip);
+    const emptySpace = raw.emptySpace ?? 'o';
+    const space = faceSpace(positions, raw.index, cell, flip, emptySpace);
+    const faces = extractFaces(vec3s(positions), cell, eps, facing, space);
     const edges = faceEdges(positions, raw.index, cell, eps);
     for (const face of ALL_FACES) faces[face].edges = edges[face];
-    return { name: raw.name, index, positions, faces, outsideCount, bounds };
+    return { name: raw.name, index, positions, faces, outsideCount, bounds, emptySpace };
   });
 
   const hProfiles = new Map<string, HProfileInfo>();
@@ -181,6 +192,15 @@ export function analyze(raws: readonly RawMesh[], s: Settings): Analysis {
     }
   }
   return { settings: s, meshes, hProfiles, vProfiles, vClasses };
+}
+
+/**
+ * Whether every mesh's object origin sits at the same height (Unity Y, within
+ * epsilon). Tiles laid out on several levels need posY/negY sockets.
+ */
+export function sameOriginHeights(raws: readonly RawMesh[], s: Settings): boolean {
+  const ys = raws.map((r) => fileToUnity(r.origin, s.axis)[1] * s.scale);
+  return ys.every((y) => Math.abs(y - ys[0]) <= s.epsilon);
 }
 
 export interface IdState {
@@ -219,19 +239,29 @@ export function meshSockets(a: Analysis, ids: IdState, meshIndex: number, vertic
   return out;
 }
 
-/** Period of every vertical base in use, sorted by base. */
-export function verticalPeriods(a: Analysis, ids: IdState): Record<string, number> {
-  const entries = [...a.vClasses.values()].map((c) => [ids.v.get(c.key)!, c.period] as const);
-  entries.sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0));
-  return Object.fromEntries(entries);
+/**
+ * A top or bottom socket as the Unity loader sees it: the explicit one, or,
+ * when left out, posX|negZ|negX|posZ built from the sides.
+ */
+export function faceSocket(s: Sockets, f: VFace): string {
+  return s[f] || H_FACES.map((h) => s[h] ?? '').join('|');
+}
+
+/** Turn a top or bottom socket k quarter turns: the last side part moves to the front, a middle part stays last. */
+export function rotateFace(id: string, k: number): string {
+  const parts = id.split('|');
+  if (parts.length !== 4 && parts.length !== 5) return id;
+  const sides = parts.slice(0, 4);
+  const n = ((k % 4) + 4) % 4;
+  return [...sides.slice(4 - n), ...sides.slice(0, 4 - n), ...parts.slice(4)].join('|');
 }
 
 /**
  * The Unity rotation rule: k clockwise quarter turns viewed from above move
- * posX -> negZ -> negX -> posZ -> posX, and XrX vertical sockets get
- * r = (r + k) % period[X].
+ * side sockets posX -> negZ -> negX -> posZ -> posX unchanged, and turn
+ * top/bottom sockets with rotateFace.
  */
-export function rotateSockets(s: Sockets, k: number, periods: Readonly<Record<string, number>>): Sockets {
+export function rotateSockets(s: Sockets, k: number): Sockets {
   k = ((k % 4) + 4) % 4;
   const moved: Sockets = {};
   H_FACES.forEach((f, i) => {
@@ -239,24 +269,28 @@ export function rotateSockets(s: Sockets, k: number, periods: Readonly<Record<st
   });
   const out: Sockets = {};
   for (const f of H_FACES) if (moved[f] !== undefined) out[f] = moved[f];
-  for (const f of V_FACES) {
-    const id = s[f];
-    if (id === undefined) continue;
-    const p = parseVertical(id);
-    if (p && p.r !== null) {
-      const period = periods[p.base] as Period;
-      out[f] = encodeVertical(p.base, (p.r + k) % period, period);
-    } else out[f] = id;
-  }
+  for (const f of V_FACES) if (s[f] !== undefined) out[f] = rotateFace(s[f], k);
   return out;
 }
 
-/** Faces for which no tile, in any of its four rotations, has a compatible opposite face. */
-export function findUnmatchedFaces(all: readonly Sockets[], periods: Readonly<Record<string, number>>): FaceRef[] {
+/** Whether `id` on `face` fits `other` on the neighbour's opposite face: sides reversed, top/bottom exactly. */
+export function socketsFit(face: Face, id: string, other: string): boolean {
+  return face === 'posY' || face === 'negY' ? id === other : id === reverseString(other);
+}
+
+/**
+ * Faces for which no tile, in any of its four rotations, has a compatible
+ * opposite face. Top and bottom are only checked where given explicitly, and
+ * may be matched by an inferred face.
+ */
+export function findUnmatchedFaces(all: readonly Sockets[]): FaceRef[] {
   const available = new Map<Face, Set<string>>();
   for (const s of all) {
     for (let k = 0; k < 4; k++) {
-      for (const [face, id] of Object.entries(rotateSockets(s, k, periods)) as [Face, string][]) {
+      const r = rotateSockets(s, k);
+      for (const face of [...H_FACES, ...V_FACES]) {
+        const id = face === 'posY' || face === 'negY' ? faceSocket(r, face) : r[face];
+        if (id === undefined) continue;
         if (!available.has(face)) available.set(face, new Set());
         available.get(face)!.add(id);
       }
@@ -265,7 +299,8 @@ export function findUnmatchedFaces(all: readonly Sockets[], periods: Readonly<Re
   const out: FaceRef[] = [];
   all.forEach((s, mesh) => {
     for (const [face, id] of Object.entries(s) as [Face, string][]) {
-      if (!available.get(OPPOSITE[face])?.has(reverseString(id))) out.push({ mesh, face });
+      const want = face === 'posY' || face === 'negY' ? id : reverseString(id);
+      if (!available.get(OPPOSITE[face])?.has(want)) out.push({ mesh, face });
     }
   });
   return out;
@@ -275,23 +310,29 @@ export interface Prototype {
   mesh_name: string;
   sockets: Sockets;
   weight: number;
+  /** Free-form labels; "LastResort" tiles are only used where nothing else fits. */
+  tags?: string[];
 }
 
 export interface ExportJson {
   prototypes: Prototype[];
-  vertical_socket_periods?: Record<string, number>;
 }
 
-export function buildExport(a: Analysis, ids: IdState, weights: readonly number[], vertical: boolean): ExportJson {
-  const json: ExportJson = {
-    prototypes: a.meshes.map((m) => ({
-      mesh_name: m.name,
-      sockets: meshSockets(a, ids, m.index, vertical),
-      weight: weights[m.index] ?? 1,
-    })),
+/** `tags` per mesh index, e.g. carried over from an imported JSON. */
+export function buildExport(
+  a: Analysis,
+  ids: IdState,
+  weights: readonly number[],
+  vertical: boolean,
+  tags: readonly (string[] | undefined)[] = [],
+): ExportJson {
+  return {
+    prototypes: a.meshes.map((m) => {
+      const p: Prototype = { mesh_name: m.name, sockets: meshSockets(a, ids, m.index, vertical), weight: weights[m.index] ?? 1 };
+      if (tags[m.index]?.length) p.tags = [...tags[m.index]!];
+      return p;
+    }),
   };
-  if (vertical) json.vertical_socket_periods = verticalPeriods(a, ids);
-  return json;
 }
 
 export function exportText(json: ExportJson): string {
@@ -310,7 +351,14 @@ export function parseImport(text: string): ExportJson {
       for (const [face, id] of Object.entries(proto.sockets ?? {})) {
         if (typeof id === 'string') sockets[face as Face] = id;
       }
-      return { mesh_name: proto.mesh_name, sockets, weight: typeof proto.weight === 'number' ? proto.weight : 1 };
+      const tags = Array.isArray(proto.tags) ? proto.tags.filter((t): t is string => typeof t === 'string') : [];
+      return {
+        mesh_name: proto.mesh_name,
+        sockets,
+        // Unity reads a missing weight as 0.
+        weight: typeof proto.weight === 'number' ? proto.weight : 0,
+        ...(tags.length ? { tags } : {}),
+      };
     }),
   };
 }

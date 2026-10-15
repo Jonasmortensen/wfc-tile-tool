@@ -10,7 +10,7 @@ const EPS = 0.001;
 describe('profile extraction', () => {
   it('finds boundary vertices of a centred wall', () => {
     const faces = extractFaces(box([-0.5, 0, -0.1], [0.5, 1, 0.1]), CELL, EPS);
-    // posX: u runs along +Z, centred; v from the cell bottom.
+    // posX: u runs along -Z (clockwise from above), centred; v from the cell bottom.
     expect(faces.posX.profile.points).toEqual([[-100, 0], [-100, 1000], [100, 0], [100, 1000]]);
     expect(faces.negX.profile.key).toBe(faces.posX.profile.key);
     expect(faces.posZ.profile.points).toEqual([]);
@@ -19,20 +19,20 @@ describe('profile extraction', () => {
     expect(faces.negY.profile.key).toBe(faces.posY.profile.key);
   });
 
-  it('uses the "seen from outside" u direction on every side', () => {
+  it('reads every side clockwise as seen from above', () => {
     // Block in the +X/+Z corner, touching posX and posZ.
     const faces = extractFaces(box([0.2, 0, 0.3], [0.5, 1, 0.5]), CELL, EPS);
-    // From outside +X, looking toward -X, right is +Z.
-    expect(faces.posX.profile.points.map((p) => p[0])).toEqual([300, 300, 500, 500]);
-    // From outside +Z, looking toward -Z, right is -X.
-    expect(faces.posZ.profile.points.map((p) => p[0])).toEqual([-500, -500, -200, -200]);
+    // posX runs from the +Z corner to the -Z corner: the block is at its start.
+    expect(faces.posX.profile.points.map((p) => p[0])).toEqual([-500, -500, -300, -300]);
+    // posZ runs from the -X corner to the +X corner: the block is at its end.
+    expect(faces.posZ.profile.points.map((p) => p[0])).toEqual([200, 200, 500, 500]);
 
     // Block in the -X/-Z corner.
     const other = extractFaces(box([-0.5, 0, -0.5], [-0.2, 1, -0.3]), CELL, EPS);
-    // From outside -X, right is -Z.
-    expect(other.negX.profile.points.map((p) => p[0])).toEqual([300, 300, 500, 500]);
-    // From outside -Z, right is +X.
-    expect(other.negZ.profile.points.map((p) => p[0])).toEqual([-500, -500, -200, -200]);
+    // negX runs from the -Z corner to the +Z corner.
+    expect(other.negX.profile.points.map((p) => p[0])).toEqual([-500, -500, -300, -300]);
+    // negZ runs from the +X corner to the -X corner.
+    expect(other.negZ.profile.points.map((p) => p[0])).toEqual([200, 200, 500, 500]);
   });
 
   it('makes geometrically continuous neighbours mirror images', () => {
@@ -100,8 +100,8 @@ describe('axis mapping', () => {
     expect(f.negZ.profile.points.length).toBe(0);
     // Unity x = -file x, so the block spans Unity x in [-0.4, -0.1].
     expect(f.posY.profile.points.map((p) => p[0])).toEqual([-400, -400, -100, -100]);
-    // On posZ, u = -x, so u in [100, 400].
-    expect(f.posZ.profile.points.map((p) => p[0])).toEqual([100, 100, 400, 400]);
+    // On posZ, u = x, so u in [-400, -100].
+    expect(f.posZ.profile.points.map((p) => p[0])).toEqual([-400, -400, -100, -100]);
   });
 
   it('applies scale and ignoreTranslation', () => {

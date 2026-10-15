@@ -152,3 +152,18 @@ td.num { color: var(--muted); }
 .id-error { color: var(--error); margin: 4px 0 8px; min-height: 1em; }
 .usage { color: var(--muted); cursor: help; }
 .placeholder { color: var(--muted); padding: 24px; text-align: center; }
+
+.wfc-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.wfc-head h2 { margin: 0 !important; }
+.wfc-head input[type='number'] { width: 56px; }
+#wfcStatus.error { color: var(--error); }
+#wfcStatus.ok { color: #3ddc84; }
+#wfcWrap { position: relative; height: 480px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+#wfcView { position: absolute; inset: 0; }
+#wfcTooltip { position: absolute; display: none; pointer-events: none; background: #000c; padding: 3px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; }
+#wfcLegend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: 12px; }
+#wfcLegend .count { color: var(--muted); }
+.sock-input { width: 90px; font-family: ui-monospace, Consolas, monospace; }
+.plot-key { font-size: 12px; margin: -4px 0 8px; }
+td.sock.open { text-decoration: underline dotted; text-underline-offset: 3px; }
+.plot-inside { fill: #8994a5; opacity: 0.22; }

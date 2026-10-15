@@ -9,8 +9,27 @@ export function box(min: Vec3, max: Vec3): Vec3[] {
   return out;
 }
 
+/** A bare point set: an empty index, so no triangles (and no facing). */
 export function rawMesh(name: string, vertices: Vec3[]): RawMesh {
-  return { name, positions: vertices.flat(), origin: [0, 0, 0] };
+  return { name, positions: vertices.flat(), index: [], origin: [0, 0, 0] };
+}
+
+/**
+ * A mesh of quads. Each quad's corners go around its outline; it is split
+ * into two triangles wound counter-clockwise as seen from `front` (a normal
+ * in the same coordinates).
+ */
+export function quadMesh(name: string, quads: { corners: [Vec3, Vec3, Vec3, Vec3]; front: Vec3 }[]): RawMesh {
+  const positions: number[] = [];
+  for (const { corners: [a, b, c, d], front } of quads) {
+    const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+    const ccw = n[0] * front[0] + n[1] * front[1] + n[2] * front[2] > 0;
+    const tris = ccw ? [a, b, c, a, c, d] : [a, c, b, a, d, c];
+    for (const v of tris) positions.push(...v);
+  }
+  return { name, positions, index: null, origin: [0, 0, 0] };
 }
 
 /** Settings where file coordinates are Unity coordinates. */
