@@ -111,6 +111,10 @@ export class Preview {
 
     const grid = new THREE.GridHelper(m * 3, 12, 0x3a414c, 0x262b33);
     grid.position.y = min[1];
+    // The grid shares the plane (and some lines) with the cell's bottom edges: draw it
+    // first without writing depth so those edges always win instead of z-fighting.
+    grid.material.depthWrite = false;
+    grid.renderOrder = -1;
     this.content.add(grid);
 
     // Unity axes at the pivot.

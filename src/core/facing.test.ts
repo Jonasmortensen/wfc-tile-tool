@@ -149,3 +149,18 @@ describe('inside and outside space', () => {
     for (let k = 1; k < 4; k++) expect(sockets[k]).toEqual(rotateSockets(sockets[0], k));
   });
 });
+
+describe('L-shaped corner wall', () => {
+  // Two walls meeting at the centre, fronts into the x > 0, z < 0 quadrant (outside).
+  const corner = quadMesh('InnerCorner', [
+    { corners: [[0, 0, -0.5], [0, 1, -0.5], [0, 1, 0], [0, 0, 0]], front: [1, 0, 0] },
+    { corners: [[0, 0, 0], [0, 1, 0], [0.5, 1, 0], [0.5, 0, 0]], front: [0, 0, -1] },
+  ]);
+
+  it('labels the quadrant across from the corner by diagonal rays, not as empty space', () => {
+    const a = analyze([corner], unitySettings({ vertical: true }));
+    // Rows run along z from -z; only the enclosed quadrant (x > 0, z < 0) is outside.
+    expect(a.meshes[0].faces.posY.profile.space).toBe('iioo' + 'iioo' + 'iiii' + 'iiii');
+    expect(a.meshes[0].faces.negY.profile.space).toBe(a.meshes[0].faces.posY.profile.space);
+  });
+});

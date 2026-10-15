@@ -22,12 +22,16 @@ import {
   parseImport,
   EMPTY_NAME,
   meshLabel,
+  originAtGround,
   sameOriginHeights,
   verticalSocket,
+  wfcBoundaryDefaults,
+  type WfcBoundary,
   type Analysis,
   type ExportJson,
   type FaceRef,
   type IdState,
+  type Prototype,
   type RawMesh,
   type Settings,
 } from './core/analysis';
@@ -63,18 +67,29 @@ const state = {
   loadError: '',
   unitNote: '',
   /** Add the format's empty tiles (mesh_name "-1"), outside and inside air, to the prototypes. */
-  emptyTile: false,
+  emptyTile: true,
   wfc: {
     size: [10, 3, 10] as [number, number, number],
     seed: 1,
     /** Boundary sockets; empty means unconstrained. */
     outer: '',
+    /** Sides of layer 0, used instead of `outer` there when Vertical is on. */
+    outerGround: '',
     bottom: '',
     top: '',
+    /** Boundary inputs the user has edited; the others follow wfcDefaults. */
+    edited: new Set<WfcBoundary>(),
     result: null as WfcResult | null,
     ms: 0,
   },
 };
+
+const WFC_BOUNDARY_INPUTS = [
+  ['outer', 'wfcOuter'],
+  ['outerGround', 'wfcOuterGround'],
+  ['bottom', 'wfcBottom'],
+  ['top', 'wfcTop'],
+] as const;
 
 const preview = new Preview($('preview'));
 const solutionView = new SolutionView($('wfcView'), $('wfcTooltip'), (mesh) => selectMesh(mesh));
@@ -168,10 +183,14 @@ const EMPTY_TILES: RawMesh[] = (['o', 'i'] as const).map((emptySpace) => ({
   origin: [0, 0, 0],
   emptySpace,
 }));
+/** Interior on the ground (bottom socket "g"), so rooms can reach down to layer 0. */
+const INSIDE_GROUND_TILE: RawMesh = { ...EMPTY_TILES[1], ground: true };
 
 /** Meshes to analyse: the FBX's, plus the empty tile when enabled. */
 function tileRaws(): RawMesh[] {
-  return state.emptyTile ? [...state.raws, ...EMPTY_TILES] : state.raws;
+  if (!state.emptyTile) return state.raws;
+  const ground = state.raws.some((r) => originAtGround(r, state.settings));
+  return [...state.raws, ...EMPTY_TILES, ...(ground ? [INSIDE_GROUND_TILE] : [])];
 }
 
 function importedTags(name: string): string[] | undefined {
@@ -307,7 +326,7 @@ function buildSettings() {
       <label class="row"><input type="checkbox" id="vertical"> posY / negY sockets</label>
       <div class="hint">Off: Unity infers top and bottom from the sides (posX|negZ|negX|posZ), which assumes straight prisms.</div>
       <label for="emptyTile">Empty tile</label>
-      <label class="row"><input type="checkbox" id="emptyTile"> add "-1" outside and inside air</label>
+      <label class="row"><input type="checkbox" id="emptyTile"> add "-1" outside and inside air, and inside air on the ground</label>
     </div>`;
   syncSettingsInputs();
 
@@ -354,6 +373,7 @@ function syncSettingsInputs(preset: AxisPresetId = presetForMapping(state.settin
   $<HTMLSelectElement>('pivot').value = s.pivot;
   $<HTMLInputElement>('ignoreTranslation').checked = s.ignoreTranslation;
   $<HTMLInputElement>('vertical').checked = s.vertical;
+  $<HTMLInputElement>('emptyTile').checked = state.emptyTile;
   $<HTMLSelectElement>('axisPreset').value = preset;
   $('axisHint').textContent = preset === 'manual' ? 'Pick the file axis each Unity axis comes from.' : AXIS_PRESETS[preset].description;
   for (const k of ['x', 'y', 'z'] as const) $<HTMLSelectElement>(`axis_${k}`).value = describeSource(s.axis[k]);
@@ -462,7 +482,7 @@ function renderWarnings(sockets: ReturnType<typeof currentSockets>, unmatched: F
   if (state.loadError) items.push({ level: 'error', text: state.loadError });
 
   const counts = new Map<string, number>();
-  // The two empty tiles share "-1" on purpose.
+  // The empty tiles share "-1" on purpose.
   for (const m of a.meshes) if (m.name !== EMPTY_NAME) counts.set(m.name, (counts.get(m.name) ?? 0) + 1);
   for (const [name, n] of counts) {
     if (n > 1) items.push({ level: 'error', text: `Duplicate mesh name "${name}" (${n} meshes).` });
@@ -594,10 +614,24 @@ function fillSocketLists(variants: ReturnType<typeof buildVariants>) {
   $('wfcFaces').innerHTML = opts(faces);
 }
 
+/** Put the defaults into every boundary input the user hasn't edited. */
+function applyWfcDefaults(a: Analysis, protos: readonly Prototype[]) {
+  const defaults = wfcBoundaryDefaults(a, protos);
+  for (const [key, id] of WFC_BOUNDARY_INPUTS) {
+    if (state.wfc.edited.has(key)) continue;
+    state.wfc[key] = defaults[key];
+    $<HTMLInputElement>(id).value = defaults[key];
+  }
+}
+
 /** Run WFC on the current sockets (as exported) and show the result. */
 function solveAndRender(resetView: boolean) {
   const a = state.analysis;
   $<HTMLButtonElement>('wfcNewSeed').disabled = !a;
+  // With top and bottom sockets the ground level is told apart: it gets its own outer socket.
+  const split = state.settings.vertical;
+  $('wfcOuterGroundLabel').hidden = $('wfcOuterGround').hidden = !split;
+  $('wfcOuterLabel').textContent = split ? 'Outer air' : 'Outer';
   const status = $('wfcStatus');
   if (!a) {
     state.wfc.result = null;
@@ -607,11 +641,13 @@ function solveAndRender(resetView: boolean) {
     $('wfcLegend').innerHTML = '';
     return;
   }
-  const variants = buildVariants(exportJson(a).prototypes);
+  const protos = exportJson(a).prototypes;
+  const variants = buildVariants(protos);
   fillSocketLists(variants);
-  const { size, seed, outer, bottom, top } = state.wfc;
+  applyWfcDefaults(a, protos);
+  const { size, seed, outer, outerGround, bottom, top } = state.wfc;
   const start = performance.now();
-  const res = solveWfc(variants, { size, seed, outer, bottom, top });
+  const res = solveWfc(variants, { size, seed, outer, outerGround: split ? outerGround : undefined, bottom, top });
   state.wfc.ms = performance.now() - start;
   state.wfc.result = res;
   solutionView.show(res, a.meshes, tileRaws().map((r) => r.index), state.settings, resetView);
@@ -655,12 +691,16 @@ function readWfcInputs(): boolean {
   state.wfc.size = [x, y, z];
   state.wfc.seed = seed;
   state.wfc.outer = $<HTMLInputElement>('wfcOuter').value.trim();
+  state.wfc.outerGround = $<HTMLInputElement>('wfcOuterGround').value.trim();
   state.wfc.bottom = $<HTMLInputElement>('wfcBottom').value.trim();
   state.wfc.top = $<HTMLInputElement>('wfcTop').value.trim();
   return true;
 }
 
-for (const id of ['wfcX', 'wfcY', 'wfcZ', 'wfcSeed', 'wfcOuter', 'wfcBottom', 'wfcTop']) {
+for (const [key, id] of WFC_BOUNDARY_INPUTS) {
+  $(id).addEventListener('change', () => state.wfc.edited.add(key));
+}
+for (const id of ['wfcX', 'wfcY', 'wfcZ', 'wfcSeed', ...WFC_BOUNDARY_INPUTS.map(([, id]) => id)]) {
   $(id).addEventListener('change', () => {
     if (readWfcInputs()) solveAndRender(['wfcX', 'wfcY', 'wfcZ'].includes(id));
   });

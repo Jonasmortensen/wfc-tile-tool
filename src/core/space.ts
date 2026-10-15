@@ -13,6 +13,17 @@ const AXES: Vec3[] = [
   [0, 0, -1],
 ];
 
+/** The other 20 of the 26 grid directions, unit length: edge and corner diagonals. */
+const DIAGONALS: Vec3[] = [];
+for (const x of [-1, 0, 1]) {
+  for (const y of [-1, 0, 1]) {
+    for (const z of [-1, 0, 1]) {
+      const n = Math.abs(x) + Math.abs(y) + Math.abs(z);
+      if (n >= 2) DIAGONALS.push([x / Math.sqrt(n), y / Math.sqrt(n), z / Math.sqrt(n)]);
+    }
+  }
+}
+
 /**
  * Sample points of a face's space grid, in grid order (row-major from the
  * profile's (0, 0) corner: u or x across, v or z up), in Unity space and
@@ -63,7 +74,9 @@ function hitTriangle(o: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3): number | nu
  * Inside/outside labels for every face's sample grid, as one character per
  * sample in grid order. A sample is labelled by the nearest surface an
  * axis-aligned ray from it meets inside the cell: its front means outside,
- * its back inside (inside wins a tie); with no surface in reach it gets `empty`. Where a surface
+ * its back inside (inside wins a tie). Where no axis-aligned ray meets a
+ * surface (the quadrant across from an L-shaped corner wall), diagonal rays
+ * decide the same way; with no surface in reach at all it gets `empty`. Where a surface
  * lies in the face itself (a roof on the top face), the label is the space
  * beyond that surface, since that is what the neighbour across the face sees.
  * Normals follow the file's winding; `flip` as in faceFacing.
@@ -97,8 +110,12 @@ export function faceSpace(
   /** Nearest surface along `dir` within the cell: its distance and whether the ray meets its front. */
   const cast = (o: Vec3, dir: Vec3) => {
     let best: { t: number; front: boolean } | null = null;
-    const axis = dir[0] ? 0 : dir[1] ? 1 : 2;
-    const reach = (dir[axis] > 0 ? max[axis] - o[axis] : o[axis] - min[axis]) + inset;
+    // Distance along `dir` to where the ray leaves the cell.
+    let reach = Infinity;
+    for (let a = 0; a < 3; a++) {
+      if (dir[a]) reach = Math.min(reach, (dir[a] > 0 ? max[a] - o[a] : o[a] - min[a]) / Math.abs(dir[a]));
+    }
+    reach += inset;
     for (const { a, b, c, n } of tris) {
       const d = dir[0] * n[0] + dir[1] * n[1] + dir[2] * n[2];
       if (d === 0) continue;
@@ -116,7 +133,8 @@ export function faceSpace(
         // A surface in the face plane: label the space beyond it.
         const own = cast(o, outward);
         if (own && own.t <= inset * 2) return own.front ? 'i' : 'o';
-        const hits = AXES.map((dir) => cast(o, dir)).filter((h) => h !== null);
+        let hits = AXES.map((dir) => cast(o, dir)).filter((h) => h !== null);
+        if (!hits.length) hits = DIAGONALS.map((dir) => cast(o, dir)).filter((h) => h !== null);
         if (!hits.length) return empty;
         // Equally near surfaces that disagree (a sample in a corner): inside wins, the same in every rotation.
         const nearest = Math.min(...hits.map((h) => h.t));

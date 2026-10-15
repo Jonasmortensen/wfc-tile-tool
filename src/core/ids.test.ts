@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { analyze, computeIds, importProposals, parseImport, buildExport, exportText, sameOriginHeights } from './analysis';
-import { assignHorizontalIds, checkHId, isPalindrome, reverseString } from './ids';
+import {
+  GROUND_SOCKET,
+  analyze,
+  buildExport,
+  computeIds,
+  exportText,
+  findUnmatchedFaces,
+  importProposals,
+  meshLabel,
+  meshSockets,
+  parseImport,
+  sameOriginHeights,
+} from './analysis';
+import { assignHorizontalIds, checkHId, checkVBase, isPalindrome, reverseString } from './ids';
 import { H_FACES, mirrorH } from './profile';
 import { AXIS_PRESETS } from './axis';
 import { box, rawMesh, unitySettings } from './testUtils';
@@ -165,5 +177,46 @@ describe('sameOriginHeights', () => {
     const zup = unitySettings({ axis: AXIS_PRESETS.zup.mapping });
     expect(sameOriginHeights([at('A', [0, 0, 0]), at('B', [0, 5, 0])], zup)).toBe(true);
     expect(sameOriginHeights([at('A', [0, 0, 0]), at('B', [0, 0, 5])], zup)).toBe(false);
+  });
+});
+
+describe('ground socket', () => {
+  const at = (name: string, origin: [number, number, number]) => ({ ...rawMesh(name, box([-0.5, 0, -0.1], [0.5, 1, 0.1])), origin });
+  const s = unitySettings({ epsilon: 0.001 });
+  const a = analyze([at('Ground', [3, 0, 0]), at('Upper', [3, 1, 0]), { ...rawMesh('-1', []), origin: [0, 0, 0], emptySpace: 'o' }], s);
+  const { ids } = computeIds(a);
+
+  it('gives tiles whose origin is at height 0 the g bottom, with or without vertical sockets', () => {
+    expect(a.meshes.map((m) => m.grounded)).toEqual([true, false, false]);
+    expect(buildExport(a, ids, [], true).prototypes[0].sockets.negY).toBe(GROUND_SOCKET);
+    expect(buildExport(a, ids, [], false).prototypes[0].sockets).toEqual({ ...meshSockets(a, ids, 0, false) });
+    expect(meshSockets(a, ids, 0, false).negY).toBe(GROUND_SOCKET);
+    expect(meshSockets(a, ids, 1, true).negY).not.toBe(GROUND_SOCKET);
+    expect(meshSockets(a, ids, 1, false).negY).toBeUndefined();
+  });
+
+  it('uses the Unity height, after scale and axis mapping', () => {
+    const zup = analyze([at('A', [0, 5, 0]), at('B', [0, 0, 500])], unitySettings({ axis: AXIS_PRESETS.zup.mapping }));
+    expect(zup.meshes.map((m) => m.grounded)).toEqual([true, false]);
+    const cm = analyze([at('A', [0, 0.05, 0])], unitySettings({ scale: 0.01 }));
+    expect(cm.meshes[0].grounded).toBe(true);
+  });
+
+  it('is not reported as unmatched, reserved, and not imported as a vertical ID', () => {
+    const sockets = a.meshes.map((m) => meshSockets(a, ids, m.index, true));
+    expect(findUnmatchedFaces(sockets)).not.toContainEqual({ mesh: 0, face: 'negY' });
+    expect(checkVBase(GROUND_SOCKET, 'k', new Map())).toMatch(/reserved/);
+    const prop = importProposals(a, parseImport(JSON.stringify({ prototypes: [{ mesh_name: 'Ground', sockets: { negY: 'g' } }] })));
+    expect(prop.v.size).toBe(0);
+  });
+
+  it('puts the ground socket under an empty tile marked as ground', () => {
+    const inside = { ...rawMesh('-1', []), origin: [0, 5, 0] as [number, number, number], emptySpace: 'i' as const };
+    const b = analyze([inside, { ...inside, ground: true }], s);
+    const { ids } = computeIds(b);
+    const [air, floor] = b.meshes.map((m) => meshSockets(b, ids, m.index, true));
+    expect(floor.negY).toBe(GROUND_SOCKET);
+    expect({ ...floor, negY: air.negY }).toEqual(air);
+    expect(meshLabel(b.meshes[1])).toBe('-1 (inside air on ground)');
   });
 });

@@ -75,7 +75,9 @@
               <label class="row muted" title="Hide the back side of every face (by the FBX winding), like Unity's default culling"><input type="checkbox" id="wfcCull"> Cull back faces</label>
             </div>
             <div class="row">
-              <span class="muted" title="Every side on the edge of the map must equal this socket (unreversed). Empty: any.">Outer</span>
+              <span class="muted" id="wfcOuterGroundLabel" title="Every side on the edge of the map in layer 0 must equal this socket (unreversed). Empty: any.">Outer ground</span>
+              <input id="wfcOuterGround" class="sock-input" list="wfcSides" placeholder="any">
+              <span class="muted" id="wfcOuterLabel" title="Every side on the edge of the map must equal this socket (unreversed). Empty: any.">Outer</span>
               <input id="wfcOuter" class="sock-input" list="wfcSides" placeholder="any">
               <span class="muted" title="Required under layer 0 (exact). Empty: any.">Bottom</span>
               <input id="wfcBottom" class="sock-input" list="wfcFaces" placeholder="any">

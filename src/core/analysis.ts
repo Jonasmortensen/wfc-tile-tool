@@ -1,6 +1,6 @@
 import { AXIS_PRESETS, cloneMapping, fileToUnity, mappingDeterminant, type AxisMapping, type Vec3 } from './axis';
 import { faceSpace, type Space } from './space';
-import { assignHorizontalIds, assignVerticalBases, encodeVertical, parseVertical, reverseString, type Rejection } from './ids';
+import { GROUND_SOCKET, assignHorizontalIds, assignVerticalBases, encodeVertical, parseVertical, reverseString, type Rejection } from './ids';
 import {
   ALL_FACES,
   H_FACES,
@@ -55,6 +55,8 @@ export interface RawMesh {
   origin: Vec3;
   /** Label for space no surface reaches; 'i' makes an empty mesh inside air. Default 'o'. */
   emptySpace?: Space;
+  /** Stands on the ground whatever its origin: a generated empty tile with the ground socket below. */
+  ground?: boolean;
 }
 
 export interface FaceRef {
@@ -95,6 +97,8 @@ export interface MeshAnalysis {
   outsideCount: number;
   bounds: { min: Vec3; max: Vec3 } | null;
   emptySpace: Space;
+  /** The object origin sits at height 0 (Unity Y, within epsilon): the bottom face gets GROUND_SOCKET. */
+  grounded: boolean;
 }
 
 export interface Analysis {
@@ -106,12 +110,20 @@ export interface Analysis {
   vClasses: Map<string, VClassInfo>;
 }
 
+export { GROUND_SOCKET };
+
 /** The format's empty tile name: nothing is built for it. */
 export const EMPTY_NAME = '-1';
 
 /** A mesh's name for display; the two empty tiles share "-1", so say which air each one is. */
-export function meshLabel(m: Pick<MeshAnalysis, 'name' | 'emptySpace'>): string {
-  return m.name === EMPTY_NAME ? `-1 (${m.emptySpace === 'i' ? 'inside' : 'outside'} air)` : m.name;
+export function meshLabel(m: Pick<MeshAnalysis, 'name' | 'emptySpace' | 'grounded'>): string {
+  if (m.name !== EMPTY_NAME) return m.name;
+  return `-1 (${m.emptySpace === 'i' ? 'inside' : 'outside'} air${m.grounded ? ' on ground' : ''})`;
+}
+
+/** Whether a mesh from the file has its object origin at height 0 (Unity Y, within epsilon). */
+export function originAtGround(raw: RawMesh, s: Settings): boolean {
+  return Math.abs(fileToUnity(raw.origin, s.axis)[1] * s.scale) <= s.epsilon;
 }
 
 export function meshToUnity(raw: RawMesh, s: Settings): Float64Array {
@@ -157,7 +169,9 @@ export function analyze(raws: readonly RawMesh[], s: Settings): Analysis {
     const faces = extractFaces(vec3s(positions), cell, eps, facing, space);
     const edges = faceEdges(positions, raw.index, cell, eps);
     for (const face of ALL_FACES) faces[face].edges = edges[face];
-    return { name: raw.name, index, positions, faces, outsideCount, bounds, emptySpace };
+    // The generated empty tiles have no real position: only `ground` puts them on the ground.
+    const grounded = raw.ground ?? (raw.emptySpace === undefined && originAtGround(raw, s));
+    return { name: raw.name, index, positions, faces, outsideCount, bounds, emptySpace, grounded };
   });
 
   const hProfiles = new Map<string, HProfileInfo>();
@@ -236,6 +250,7 @@ export function meshSockets(a: Analysis, ids: IdState, meshIndex: number, vertic
   const out: Sockets = {};
   for (const f of H_FACES) out[f] = ids.h.get(m.faces[f].profile.key)!;
   if (vertical) for (const f of V_FACES) out[f] = verticalSocket(a, ids, m.faces[f].profile.key);
+  if (m.grounded) out.negY = GROUND_SOCKET;
   return out;
 }
 
@@ -299,6 +314,8 @@ export function findUnmatchedFaces(all: readonly Sockets[]): FaceRef[] {
   const out: FaceRef[] = [];
   all.forEach((s, mesh) => {
     for (const [face, id] of Object.entries(s) as [Face, string][]) {
+      // The ground sits on the grid's bottom boundary, not on another tile.
+      if (face === 'negY' && id === GROUND_SOCKET) continue;
       const want = face === 'posY' || face === 'negY' ? id : reverseString(id);
       if (!available.get(OPPOSITE[face])?.has(want)) out.push({ mesh, face });
     }
@@ -386,6 +403,7 @@ export function importProposals(
         }
       }
       for (const f of V_FACES) {
+        if (f === 'negY' && proto.sockets[f] === GROUND_SOCKET) continue;
         const parsed = proto.sockets[f] !== undefined ? parseVertical(proto.sockets[f]) : null;
         const classKey = a.vProfiles.get(m.faces[f].profile.key)!.classKey;
         if (parsed && !v.has(classKey)) {
@@ -396,4 +414,35 @@ export function importProposals(
     }
   }
   return { h, v, origin };
+}
+
+export type WfcBoundary = 'outer' | 'outerGround' | 'bottom' | 'top';
+
+/**
+ * Boundary defaults: the ground socket under layer 0 when some tile has it,
+ * outside air around the sides and on top when the empty tile is on, and
+ * outside ground around layer 0: of the symmetric sides of ground tiles, the
+ * one with the most outside samples.
+ */
+export function wfcBoundaryDefaults(a: Analysis, protos: readonly Prototype[]): Record<WfcBoundary, string> {
+  const air = a.meshes.findIndex((m) => m.name === EMPTY_NAME && m.emptySpace === 'o');
+  const airSockets = air >= 0 ? protos[air].sockets : null;
+  let outerGround = '';
+  let most = 0;
+  for (const m of a.meshes) {
+    if (!m.grounded) continue;
+    for (const f of H_FACES) {
+      const profile = m.faces[f].profile;
+      if (!a.hProfiles.get(profile.key)!.symmetric) continue;
+      const outside = [...profile.space].filter((c) => c === 'o').length;
+      if (outside > most) [outerGround, most] = [protos[m.index].sockets[f]!, outside];
+    }
+  }
+  return {
+    // A side next to air must be the reverse of air's side; a top under air equals air's bottom.
+    outer: airSockets ? reverseString(airSockets.negX!) : '',
+    outerGround,
+    bottom: a.meshes.some((m) => m.grounded) ? GROUND_SOCKET : '',
+    top: airSockets ? faceSocket(airSockets, 'negY') : '',
+  };
 }

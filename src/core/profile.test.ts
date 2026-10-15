@@ -105,7 +105,7 @@ describe('axis mapping', () => {
   });
 
   it('applies scale and ignoreTranslation', () => {
-    const raw = { ...rawMesh('m', box([450, 0, -50], [550, 100, 50])), origin: [500, 0, 0] as Vec3 };
+    const raw = { name: 'm', positions: box([450, 0, -50], [550, 100, 50]).flat(), index: [], origin: [500, 0, 0] as Vec3 };
     const a = analyze([raw], unitySettings({ scale: 0.01, ignoreTranslation: true }));
     expect(a.meshes[0].outsideCount).toBe(0);
     expect(a.meshes[0].faces.posY.profile.points).toEqual([[-500, -500], [-500, 500], [500, -500], [500, 500]]);

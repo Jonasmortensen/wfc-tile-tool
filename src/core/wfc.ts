@@ -82,6 +82,8 @@ export interface WfcOptions {
   seed: number;
   /** Socket every side on the edge of the map must equal (unreversed). Empty: unconstrained. */
   outer?: string;
+  /** `outer` for the sides of layer 0 only (ground level); undefined: `outer` there too. */
+  outerGround?: string;
   /** Socket required under layer 0 (exact). Empty: unconstrained. */
   bottom?: string;
   /** Socket required on top of the highest layer (exact). Empty: unconstrained. */
@@ -134,7 +136,14 @@ export function solveWfc(variants: Variant[], opts: WfcOptions): WfcResult {
     return out;
   });
   // Boundary sockets a variant must have on a face that lies on the grid edge.
-  const boundary = (f: Face) => (f === 'posY' ? opts.top : f === 'negY' ? opts.bottom : opts.outer) || '';
+  const boundary = (f: Face, c: number) =>
+    (f === 'posY'
+      ? opts.top
+      : f === 'negY'
+        ? opts.bottom
+        : opts.outerGround !== undefined && cellCoords(size, c)[1] === 0
+          ? opts.outerGround
+          : opts.outer) || '';
   const xlogx = (w: number) => (w > 0 ? w * Math.log(w) : 0);
 
   let attempts = 0;
@@ -185,10 +194,10 @@ export function solveWfc(variants: Variant[], opts: WfcOptions): WfcResult {
 
     // Boundary sockets on the grid edges.
     ALL_FACES.forEach((f, fi) => {
-      const want = boundary(f);
-      if (!want) return;
       for (let c = 0; c < n && contradiction === null; c++) {
         if (neighbours[fi][c] >= 0) continue;
+        const want = boundary(f, c);
+        if (!want) continue;
         for (let v = 0; v < nv; v++) if (domain[c * nv + v] && variants[v].sockets[f] !== want) ban(c, v);
       }
     });

@@ -128,9 +128,13 @@ export function assignHorizontalIds(
   return { ids, rejected };
 }
 
+/** negY socket of every tile from the file whose object origin is at height 0. */
+export const GROUND_SOCKET = 'g';
+
 export function checkVBase(base: string, selfKey: string, owner: ReadonlyMap<string, string>): string | null {
   if ([...base].length !== 1) return 'Vertical IDs must be a single character.';
   if (/[\s0-9|]/.test(base)) return 'Vertical IDs cannot be a digit, whitespace or "|".';
+  if (base === GROUND_SOCKET) return `"${GROUND_SOCKET}" is reserved for the bottom of tiles at height 0.`;
   const o = owner.get(base);
   if (o !== undefined && o !== selfKey) return `"${base}" is already used by another vertical profile class.`;
   return null;

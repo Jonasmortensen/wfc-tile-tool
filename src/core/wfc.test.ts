@@ -123,4 +123,21 @@ describe('solveWfc', () => {
     expect(res.attempts).toBe(3);
     expect(res.contradiction).not.toBeNull();
   });
+
+  it('uses the ground outer socket on the sides of layer 0 only', () => {
+    // Ground gives its sides 'b' and its bottom 'g'; air ('o') goes above.
+    const protos = [
+      { sockets: { ...all('b'), negY: 'g', posY: 'o|o|o|o' }, weight: 1 },
+      { sockets: all('o'), weight: 1 },
+    ];
+    const variants = buildVariants(protos);
+    const opts = { size: [3, 2, 3] as [number, number, number], seed: 1, outer: 'o', bottom: 'g', top: 'o|o|o|o' };
+    expect(solveWfc(variants, opts).ok).toBe(false);
+    const res = solveWfc(variants, { ...opts, outerGround: 'b' });
+    expect(res.ok).toBe(true);
+    checkSolution(res);
+    for (let i = 0; i < res.cells.length; i++) {
+      expect(variants[res.cells[i]].sockets.negX).toBe(cellCoords(res.size, i)[1] === 0 ? 'b' : 'o');
+    }
+  });
 });
