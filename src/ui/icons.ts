@@ -14,6 +14,7 @@ export const ICONS = {
   info: svg(`<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/>${dot(12, 8, 0.9)}`),
   filter: svg('<path d="M4 5.5h16l-6.2 7.2V19l-3.6-1.8v-4.5z"/>'),
   reset: svg('<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/>'),
+  look: svg('<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none"/>'),
   search: svg('<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.4-4.4"/>'),
   x: svg('<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>'),
   cube: svg('<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>'),

@@ -44,7 +44,7 @@ import { checkHId, checkVBase, reverseString } from './core/ids';
 import { ALL_FACES, H_FACES, OPPOSITE, rotatePoint, type Face } from './core/profile';
 import { plotH, plotV } from './ui/plots';
 import { BACK_FACE_COLOR, FACE_COLORS, Preview } from './ui/preview';
-import { SolutionView, protoColor } from './ui/solution';
+import { SolutionView, protoColor, type Look } from './ui/solution';
 import { buildVariants, solveWfc, tagFilter, type WfcResult } from './core/wfc';
 import { ICONS, injectIcons } from './ui/icons';
 import { installTooltips } from './ui/tooltip';
@@ -865,6 +865,45 @@ function renderTagFilter(protos: readonly Prototype[]) {
     : '<span class="empty-note">No tiles have tags.</span>';
 }
 
+const LOOKS: Look[] = ['debug', 'shaded'];
+
+/** Draw the solve in `look` and show it in the menu; remembered between sessions. */
+function setLook(look: Look) {
+  solutionView.setLook(look);
+  $('giSetting').classList.toggle('disabled', look !== 'shaded');
+  $<HTMLInputElement>('giIntensity').disabled = look !== 'shaded';
+  $('lookLabel').textContent = look === 'debug' ? 'Debug' : 'Shaded';
+  document.querySelectorAll<HTMLElement>('.menu-item[data-look]').forEach((el) => {
+    el.setAttribute('aria-checked', String(el.dataset.look === look));
+  });
+  prefs.set('look', look);
+}
+
+function toggleLookMenu(open = $('lookPanel').hidden) {
+  $('lookPanel').hidden = !open;
+}
+$('lookBtn').addEventListener('click', () => toggleLookMenu());
+$('lookPanel').addEventListener('click', (e) => {
+  const look = (e.target as Element).closest<HTMLElement>('.menu-item')?.dataset.look as Look | undefined;
+  if (!look) return;
+  setLook(look);
+  toggleLookMenu(false);
+});
+setLook(LOOKS.includes(prefs.get('look') as Look) ? (prefs.get('look') as Look) : 'debug');
+
+/** Ground darkening strength for the shaded look, 0 to 1; remembered between sessions. */
+function setGroundDarkening(v: number) {
+  solutionView.setGroundDarkening(v);
+  $<HTMLInputElement>('giIntensity').value = String(v);
+  $('giValue').textContent = `${Math.round(v * 100)}%`;
+  prefs.set('groundDarkening', String(v));
+}
+$('giIntensity').addEventListener('input', () => setGroundDarkening(Number($<HTMLInputElement>('giIntensity').value)));
+{
+  const saved = Number(prefs.get('groundDarkening') ?? NaN);
+  setGroundDarkening(saved >= 0 && saved <= 1 ? saved : 0.5);
+}
+
 function toggleTagFilter(open = $('tagFilterPanel').hidden) {
   $('tagFilterPanel').hidden = !open;
 }
@@ -1065,6 +1104,7 @@ document.addEventListener('pointerdown', (e) => {
   const t = e.target as Element;
   if (!$('issuesPanel').hidden && !t.closest('#issuesPanel, #issuesBtn')) toggleIssues(false);
   if (!$('tagFilterPanel').hidden && !t.closest('.tag-filter')) toggleTagFilter(false);
+  if (!$('lookPanel').hidden && !t.closest('.vp-menu')) toggleLookMenu(false);
 });
 
 const helpDialog = $<HTMLDialogElement>('helpDialog');
@@ -1127,6 +1167,7 @@ document.addEventListener('keydown', (e) => {
   } else if (e.key === 'Escape') {
     toggleIssues(false);
     toggleTagFilter(false);
+    toggleLookMenu(false);
   } else if (['1', '2'].includes(e.key)) {
     setTab(TABS[Number(e.key) - 1]);
   } else if (e.key.toLowerCase() === 'r') {
