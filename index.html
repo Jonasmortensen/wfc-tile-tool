@@ -79,6 +79,16 @@
                 <label class="vp-btn" data-tip="Hide the back side of every face (by the FBX winding), like Unity's default culling">
                   <input type="checkbox" id="wfcCull" hidden><span data-icon="cull">Cull</span>
                 </label>
+                <div class="tag-filter">
+                  <button id="tagFilterBtn" class="vp-btn" data-icon="filter" data-tip="Leave tiles out of the solve by tag">Tags <span id="tagFilterCount" class="badge"></span></button>
+                  <div id="tagFilterPanel" class="tag-panel" hidden>
+                    <div class="tag-panel-head">
+                      <span class="info" data-tip="Turn a tag off to leave every tile carrying it out of the solve. Untagged tiles, like air, are always used. The export is not affected.">Tags in the solve</span>
+                      <button id="tagFilterReset" class="link">Reset</button>
+                    </div>
+                    <div id="tagChips" class="tag-chips"></div>
+                  </div>
+                </div>
                 <button id="wfcNewSeed" class="vp-btn" data-icon="dice" data-tip="Roll a new seed and solve (R)">Reroll</button>
               </div>
             </div>

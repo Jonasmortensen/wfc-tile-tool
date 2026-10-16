@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { socketsFit, type Sockets } from './analysis';
 import { ALL_FACES, OPPOSITE } from './profile';
-import { FACE_OFFSETS, buildVariants, cellCoords, cellIndex, solveWfc, type WfcResult } from './wfc';
+import { FACE_OFFSETS, buildVariants, cellCoords, cellIndex, solveWfc, tagFilter, type WfcResult } from './wfc';
 
 /** Every pair of placed neighbours must fit. */
 function checkSolution(res: WfcResult) {
@@ -139,5 +139,14 @@ describe('solveWfc', () => {
     for (let i = 0; i < res.cells.length; i++) {
       expect(variants[res.cells[i]].sockets.negX).toBe(cellCoords(res.size, i)[1] === 0 ? 'b' : 'o');
     }
+  });
+});
+
+describe('tagFilter', () => {
+  it('drops prototypes with a hidden tag and always keeps untagged ones', () => {
+    const protos = [{ tags: ['Wall', 'Corner'] }, { tags: ['Wall'] }, { tags: ['Roof'] }, {}];
+    expect(tagFilter(protos, new Set())).toEqual([true, true, true, true]);
+    expect(tagFilter(protos, new Set(['Corner']))).toEqual([false, true, true, true]);
+    expect(tagFilter(protos, new Set(['Wall', 'Roof']))).toEqual([false, false, false, true]);
   });
 });

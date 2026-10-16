@@ -13,6 +13,7 @@ import {
   meshSockets,
   parseImport,
   sameOriginHeights,
+  tagsFromName,
 } from './analysis';
 import { assignHorizontalIds, checkHId, checkVBase, isPalindrome, reverseString } from './ids';
 import { H_FACES, mirrorH } from './profile';
@@ -154,7 +155,7 @@ describe('JSON import and export', () => {
     const flat = buildExport(a, ids, a.meshes.map(() => 2), false);
     expect(Object.keys(flat.prototypes[0].sockets)).toEqual(['posX', 'negZ', 'negX', 'posZ']);
     expect(flat.prototypes[0].weight).toBe(2);
-    expect('tags' in flat.prototypes[0]).toBe(false);
+    expect(flat.prototypes[0].tags).toEqual(['Empty']);
   });
 
   it('keeps tags and reads a missing weight as 0', () => {
@@ -164,8 +165,18 @@ describe('JSON import and export', () => {
     expect(imported.prototypes[0]).toEqual({ mesh_name: 'Ledge', sockets: {}, weight: 0, tags: ['LastResort'] });
     const { ids } = computeIds(a);
     const json = buildExport(a, ids, [], false, [, , , ['LastResort']]);
-    expect(json.prototypes[3].tags).toEqual(['LastResort']);
-    expect(json.prototypes[0].tags).toBeUndefined();
+    expect(json.prototypes[3].tags).toEqual(['Ledge', 'LastResort']);
+    expect(json.prototypes[0].tags).toEqual(['Empty']);
+  });
+});
+
+describe('tagsFromName', () => {
+  it('splits PascalCase, acronyms, digits and separators', () => {
+    expect(tagsFromName('WallCornerInner')).toEqual(['Wall', 'Corner', 'Inner']);
+    expect(tagsFromName('UIPanel_02')).toEqual(['UI', 'Panel', '02']);
+    expect(tagsFromName('roof edge-Left')).toEqual(['roof', 'edge', 'Left']);
+    expect(tagsFromName('WallWall')).toEqual(['Wall']);
+    expect(tagsFromName('-1')).toEqual([]);
   });
 });
 

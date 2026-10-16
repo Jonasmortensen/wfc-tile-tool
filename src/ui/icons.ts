@@ -12,6 +12,7 @@ export const ICONS = {
   alert: svg(`<path d="M10.3 4.6 2.9 17.5A2 2 0 0 0 4.6 20.5h14.8a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4"/>${dot(12, 17, 0.9)}`),
   check: svg('<circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/>'),
   info: svg(`<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/>${dot(12, 8, 0.9)}`),
+  filter: svg('<path d="M4 5.5h16l-6.2 7.2V19l-3.6-1.8v-4.5z"/>'),
   x: svg('<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>'),
   cube: svg('<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>'),
   cull: svg('<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9" stroke-dasharray="2 2.2"/>'),

@@ -371,7 +371,23 @@ export function importedBoundary(b: Partial<BoundarySockets>): Partial<Record<Wf
   return out;
 }
 
-/** `tags` per mesh index, e.g. carried over from an imported JSON. */
+/**
+ * Tags from a mesh name: its PascalCase words, with acronyms and digit runs
+ * as their own words and anything else (`_`, spaces, `-`) as a separator:
+ * "WallCornerInner" → Wall, Corner, Inner; "UIPanel_02" → UI, Panel, 02.
+ * The empty tile ("-1") has none.
+ */
+export function tagsFromName(name: string): string[] {
+  if (name === EMPTY_NAME) return [];
+  return [...new Set(name.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+/g) ?? [])];
+}
+
+/** A prototype's tags: the ones from its name, then any `extra` (e.g. imported) not already there. */
+export function prototypeTags(name: string, extra: readonly string[] = []): string[] {
+  return [...new Set([...tagsFromName(name), ...extra])];
+}
+
+/** Extra `tags` per mesh index, e.g. carried over from an imported JSON; the name's tags are always added. */
 export function buildExport(
   a: Analysis,
   ids: IdState,
@@ -382,7 +398,8 @@ export function buildExport(
   return {
     prototypes: a.meshes.map((m) => {
       const p: Prototype = { mesh_name: m.name, sockets: meshSockets(a, ids, m.index, vertical), weight: weights[m.index] ?? 1 };
-      if (tags[m.index]?.length) p.tags = [...tags[m.index]!];
+      const t = prototypeTags(m.name, tags[m.index]);
+      if (t.length) p.tags = t;
       return p;
     }),
   };

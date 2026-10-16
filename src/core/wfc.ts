@@ -50,6 +50,14 @@ export function buildVariants(protos: readonly Pick<Prototype, 'sockets' | 'weig
   return out;
 }
 
+/**
+ * Which prototypes a tag filter keeps: those with none of the `hidden` tags.
+ * Untagged prototypes (like the empty tiles) are always kept.
+ */
+export function tagFilter(protos: readonly Pick<Prototype, 'tags'>[], hidden: ReadonlySet<string>): boolean[] {
+  return protos.map((p) => !p.tags?.some((t) => hidden.has(t)));
+}
+
 /** compat[face][a] = variants that may sit next to variant a on its `face` side. */
 export function compatibility(variants: readonly Variant[]): Record<Face, number[][]> {
   const out = {} as Record<Face, number[][]>;

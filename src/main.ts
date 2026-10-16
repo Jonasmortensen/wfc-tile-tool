@@ -22,6 +22,7 @@ import {
   importProposals,
   meshSockets,
   parseImport,
+  prototypeTags,
   EMPTY_NAME,
   meshLabel,
   originAtGround,
@@ -43,7 +44,7 @@ import { ALL_FACES, H_FACES, OPPOSITE, rotatePoint, type Face } from './core/pro
 import { plotH, plotV } from './ui/plots';
 import { BACK_FACE_COLOR, FACE_COLORS, Preview } from './ui/preview';
 import { SolutionView, protoColor } from './ui/solution';
-import { buildVariants, solveWfc, type WfcResult } from './core/wfc';
+import { buildVariants, solveWfc, tagFilter, type WfcResult } from './core/wfc';
 import { ICONS, injectIcons } from './ui/icons';
 import { installTooltips } from './ui/tooltip';
 
@@ -109,6 +110,8 @@ const state = {
     top: '',
     /** Boundary inputs the user has edited; the others follow wfcDefaults. */
     edited: new Set<WfcBoundary>(),
+    /** Tags turned off in the solve: tiles carrying any of them are left out. */
+    hiddenTags: new Set<string>(),
     result: null as WfcResult | null,
     ms: 0,
   },
@@ -539,9 +542,11 @@ function renderMeshes(sockets: ReturnType<typeof currentSockets>, unmatched: Fac
           const flag = m.outsideCount
             ? `<span class="flag" data-tip="${m.outsideCount} of ${m.positions.length / 3} vertices lie outside the cell">${ICONS.alert}</span>`
             : '';
+          const tags = prototypeTags(m.name, importedTags(m.name));
+          const tip = (tags.length ? `Tags: ${tags.join(', ')}` : 'No tags') + (dup ? '\nDuplicate mesh name' : '');
           return `
-        <tr class="mesh-row${i === state.selected ? ' selected' : ''}" data-mesh="${i}">
-          <td><div class="name${dup ? ' name-dup' : ''}"${dup ? ' data-tip="Duplicate mesh name"' : ''}><span class="swatch sq" style="background:#${protoColor(i).getHexString()}"></span><span class="label">${esc(meshLabel(m))}</span>${flag}</div></td>
+        <tr class="mesh-row${i === state.selected ? ' selected' : ''}" data-mesh="${i}" data-tip="${esc(tip)}">
+          <td><div class="name${dup ? ' name-dup' : ''}"><span class="swatch sq" style="background:#${protoColor(i).getHexString()}"></span><span class="label">${esc(meshLabel(m))}</span>${flag}</div></td>
           ${faces
             .map((f) => {
               const isBad = bad.has(`${i}:${f}`);
@@ -745,9 +750,28 @@ function solveAndRender(resetView: boolean) {
     return;
   }
   const protos = exportJson(a).prototypes;
-  const variants = buildVariants(protos);
+  const kept = tagFilter(protos, state.wfc.hiddenTags);
+  renderTagFilter(protos);
+  document.querySelectorAll<HTMLElement>('tr.mesh-row').forEach((row) => {
+    const out = !kept[Number(row.dataset.mesh)];
+    row.classList.toggle('filtered', out);
+    const used = row.querySelector<HTMLElement>('td.placed')!;
+    if (out) used.dataset.tip = 'Left out of the solve by the tag filter';
+    else delete used.dataset.tip;
+  });
+  const variants = buildVariants(protos).filter((v) => kept[v.proto]);
   fillSocketLists(variants);
   applyWfcDefaults(a, protos);
+  if (!variants.length) {
+    state.wfc.result = null;
+    solutionView.show(null, [], [], state.settings, resetView);
+    status.className = 'pill error';
+    dot.className = 'dot error';
+    status.innerHTML = `${ICONS.alert}No tiles left`;
+    status.dataset.tip = 'Every tile carries a tag that is turned off.';
+    document.querySelectorAll<HTMLElement>('td.placed').forEach((td) => (td.textContent = '·'));
+    return;
+  }
   const { size, seed, outer, outerGround, bottom, top } = state.wfc;
   const start = performance.now();
   const res = solveWfc(variants, { size, seed, outer, outerGround: split ? outerGround : undefined, bottom, top });
@@ -772,6 +796,41 @@ function solveAndRender(resetView: boolean) {
     td.textContent = n ? String(n) : '·';
   });
 }
+
+/** The tag chips (with tile counts) and the count of tags turned off on the button. */
+function renderTagFilter(protos: readonly Prototype[]) {
+  const counts = new Map<string, number>();
+  for (const p of protos) for (const t of p.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const tags = [...counts.keys()].sort((x, y) => x.localeCompare(y));
+  const off = tags.filter((t) => state.wfc.hiddenTags.has(t)).length;
+  $('tagFilterCount').textContent = off ? String(off) : '';
+  $('tagFilterBtn').classList.toggle('active', off > 0);
+  $<HTMLButtonElement>('tagFilterReset').disabled = !off;
+  $('tagChips').innerHTML = tags.length
+    ? tags
+        .map((t) => {
+          const on = !state.wfc.hiddenTags.has(t);
+          return `<button class="tag-chip${on ? '' : ' off'}" data-tag="${esc(t)}" aria-pressed="${on}">${esc(t)}<span class="n">${counts.get(t)}</span></button>`;
+        })
+        .join('')
+    : '<span class="empty-note">No tiles have tags.</span>';
+}
+
+function toggleTagFilter(open = $('tagFilterPanel').hidden) {
+  $('tagFilterPanel').hidden = !open;
+}
+$('tagFilterBtn').addEventListener('click', () => toggleTagFilter());
+$('tagChips').addEventListener('click', (e) => {
+  const tag = (e.target as Element).closest<HTMLElement>('.tag-chip')?.dataset.tag;
+  if (tag === undefined) return;
+  const hidden = state.wfc.hiddenTags;
+  if (!hidden.delete(tag)) hidden.add(tag);
+  solveAndRender(false);
+});
+$('tagFilterReset').addEventListener('click', () => {
+  state.wfc.hiddenTags.clear();
+  solveAndRender(false);
+});
 
 function readWfcInputs(): boolean {
   const int = (id: string, max: number) => {
@@ -937,6 +996,7 @@ $('issuesClose').addEventListener('click', () => toggleIssues(false));
 document.addEventListener('pointerdown', (e) => {
   const t = e.target as Element;
   if (!$('issuesPanel').hidden && !t.closest('#issuesPanel, #issuesBtn')) toggleIssues(false);
+  if (!$('tagFilterPanel').hidden && !t.closest('.tag-filter')) toggleTagFilter(false);
 });
 
 const helpDialog = $<HTMLDialogElement>('helpDialog');
@@ -971,6 +1031,7 @@ document.addEventListener('keydown', (e) => {
     helpDialog.showModal();
   } else if (e.key === 'Escape') {
     toggleIssues(false);
+    toggleTagFilter(false);
   } else if (['1', '2'].includes(e.key)) {
     setTab(TABS[Number(e.key) - 1]);
   } else if (e.key.toLowerCase() === 'r') {
