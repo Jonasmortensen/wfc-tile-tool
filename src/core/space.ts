@@ -52,6 +52,21 @@ export function spaceSamples(face: Face, cell: Cell, inset: number): Vec3[] {
   return out;
 }
 
+/** Whether `p`, lying in the triangle's plane, is inside it or within `tol` of its edges. */
+function inTriangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3, tol: number): boolean {
+  const sub = (x: Vec3, y: Vec3): Vec3 => [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
+  const dot = (x: Vec3, y: Vec3) => x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+  const [v0, v1, v2] = [sub(b, a), sub(c, a), sub(p, a)];
+  const [d00, d01, d11, d20, d21] = [dot(v0, v0), dot(v0, v1), dot(v1, v1), dot(v2, v0), dot(v2, v1)];
+  const den = d00 * d11 - d01 * d01;
+  if (!den) return false;
+  const v = (d11 * d20 - d01 * d21) / den;
+  const w = (d00 * d21 - d01 * d20) / den;
+  // Barycentric slack of about `tol` in distance.
+  const slack = tol / Math.sqrt(Math.max(d00, d11));
+  return v >= -slack && w >= -slack && v + w <= 1 + slack;
+}
+
 /** Möller–Trumbore: distance along `dir` to the triangle, or null. */
 function hitTriangle(o: Vec3, dir: Vec3, a: Vec3, b: Vec3, c: Vec3): number | null {
   const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
@@ -125,6 +140,30 @@ export function faceSpace(
     return best;
   };
 
+  /**
+   * A sample lying on a surface (a 45° slope runs straight through grid
+   * samples) has no in front or behind, and rays from it break the tie
+   * arbitrarily. Step it a little to the front of every surface it lies on,
+   * so it reads as in front of them, the same in every tile with that surface.
+   * Surfaces parallel to the face are left to the in-face rule.
+   */
+  const offSurface = (o: Vec3, outward: Vec3): Vec3 => {
+    const push: Vec3 = [0, 0, 0];
+    for (const { a, b, c, n } of tris) {
+      const len = Math.hypot(n[0], n[1], n[2]);
+      if (!len) continue;
+      const u: Vec3 = [n[0] / len, n[1] / len, n[2] / len];
+      if (Math.abs(u[0] * outward[0] + u[1] * outward[1] + u[2] * outward[2]) > 0.999) continue;
+      const dist = (o[0] - a[0]) * u[0] + (o[1] - a[1]) * u[1] + (o[2] - a[2]) * u[2];
+      if (Math.abs(dist) > inset * 0.5) continue;
+      const p: Vec3 = [o[0] - dist * u[0], o[1] - dist * u[1], o[2] - dist * u[2]];
+      if (!inTriangle(p, a, b, c, inset * 0.5)) continue;
+      for (let k = 0; k < 3; k++) push[k] += u[k];
+    }
+    const l = Math.hypot(push[0], push[1], push[2]);
+    return l ? [o[0] + (push[0] / l) * inset, o[1] + (push[1] / l) * inset, o[2] + (push[2] / l) * inset] : o;
+  };
+
   const out = {} as Record<Face, string>;
   for (const face of ALL_FACES) {
     const outward = FACE_NORMALS[face];
@@ -133,6 +172,7 @@ export function faceSpace(
         // A surface in the face plane: label the space beyond it.
         const own = cast(o, outward);
         if (own && own.t <= inset * 2) return own.front ? 'i' : 'o';
+        o = offSurface(o, outward);
         let hits = AXES.map((dir) => cast(o, dir)).filter((h) => h !== null);
         if (!hits.length) hits = DIAGONALS.map((dir) => cast(o, dir)).filter((h) => h !== null);
         if (!hits.length) return empty;

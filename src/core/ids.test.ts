@@ -15,6 +15,7 @@ import {
   sameOriginHeights,
   samplesSpace,
   tagsFromName,
+  wfcBoundaryDefaults,
 } from './analysis';
 import { assignHorizontalIds, checkHId, checkVBase, isPalindrome, reverseString } from './ids';
 import { ALL_FACES, H_FACES, mirrorH } from './profile';
@@ -209,9 +210,9 @@ describe('enclosed space', () => {
 describe('boundary sockets', () => {
   const b = { outer: 'oo', outerGround: 'g1', bottom: 'g', top: '' };
 
-  it('exports after the prototypes, with inside only when top/bottom sockets are on', () => {
-    expect(boundarySockets(b, true)).toEqual({ outside: 'oo', inside: 'g1', bottom: 'g', top: '' });
-    expect(boundarySockets(b, false)).toEqual({ outside: 'oo', bottom: 'g', top: '' });
+  it('exports after the prototypes, with ground_sides only when top/bottom sockets are on', () => {
+    expect(boundarySockets(b, true)).toEqual({ sides: 'oo', ground_sides: 'g1', bottom: 'g', top: '' });
+    expect(boundarySockets(b, false)).toEqual({ sides: 'oo', bottom: 'g', top: '' });
     const text = exportText({ prototypes: [], boundary_sockets: boundarySockets(b, true) });
     expect(text.indexOf('"prototypes"')).toBeLessThan(text.indexOf('"boundary_sockets"'));
   });
@@ -234,6 +235,24 @@ describe('sameOriginHeights', () => {
     const zup = unitySettings({ axis: AXIS_PRESETS.zup.mapping });
     expect(sameOriginHeights([at('A', [0, 0, 0]), at('B', [0, 5, 0])], zup)).toBe(true);
     expect(sameOriginHeights([at('A', [0, 0, 0]), at('B', [0, 0, 5])], zup)).toBe(false);
+  });
+});
+
+describe('wfcBoundaryDefaults', () => {
+  it('prefers a ground tile with the same socket on all four sides, whatever the file order', () => {
+    const ground = (name: string, min: [number, number, number], max: [number, number, number]) => ({
+      ...rawMesh(name, box(min, max)),
+      origin: [0, 0, 0] as [number, number, number],
+    });
+    // Without enclosed space every side is outside, so only the new rule tells these apart.
+    const a = analyze(
+      [ground('HalfSlab', [-0.5, 0, -0.5], [0, 0.2, 0.5]), ground('Ground', [-0.5, 0, -0.5], [0.5, 0.2, 0.5])],
+      unitySettings({ enclosedSpace: false }),
+    );
+    const protos = buildExport(a, computeIds(a).ids, [], true).prototypes;
+    const [half, plain] = protos.map((p) => p.sockets);
+    expect(half.posX).not.toBe(plain.posX);
+    expect(wfcBoundaryDefaults(a, protos).outerGround).toBe(plain.posX);
   });
 });
 

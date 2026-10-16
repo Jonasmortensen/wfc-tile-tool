@@ -528,6 +528,7 @@ function render(resetView: boolean) {
     recompute(false);
   });
   $('emptyState').hidden = state.raws.length > 0;
+  syncResetWeights();
 
   if (!a) {
     preview.show(null, null, state.settings, resetView);
@@ -549,7 +550,7 @@ function render(resetView: boolean) {
   renderMeshes(sockets, unmatched);
   renderWarnings(sockets, unmatched);
   const counts = renderIdTables();
-  $('tileCount').textContent = String(a.meshes.length);
+  applyTileSearch();
   $('profileCount').textContent = String(counts.h + counts.v);
   $('statusMsg').textContent =
     `${a.meshes.length} tiles · ${counts.h} side profiles` + (state.settings.vertical ? ` · ${counts.v} top/bottom profiles` : '');
@@ -954,8 +955,27 @@ $('meshes').addEventListener('change', (e) => {
   input.classList.toggle('invalid', !ok);
   if (ok) {
     state.weights[Number(input.dataset.mesh)] = v;
+    syncResetWeights();
     solveAndRender(false);
   }
+});
+
+/** The reset button is only live while some tile's weight differs from 1. */
+function syncResetWeights() {
+  const n = state.analysis?.meshes.length ?? 0;
+  $<HTMLButtonElement>('resetWeights').disabled = !state.weights.slice(0, n).some((w) => (w ?? 1) !== 1);
+}
+
+$('resetWeights').addEventListener('click', () => {
+  const a = state.analysis;
+  if (!a) return;
+  for (const m of a.meshes) state.weights[m.index] = 1;
+  document.querySelectorAll<HTMLInputElement>('input.weight').forEach((input) => {
+    input.value = '1';
+    input.classList.remove('invalid');
+  });
+  syncResetWeights();
+  solveAndRender(false);
 });
 
 $('idTables').addEventListener('change', (e) => {
@@ -1060,6 +1080,30 @@ function rerollSeed() {
   if (readWfcInputs()) solveAndRender(false);
 }
 
+/** Show only the tiles list rows whose name or tags contain every word of the search, ignoring case. */
+function applyTileSearch() {
+  const a = state.analysis;
+  if (!a) return;
+  const words = $<HTMLInputElement>('tileSearch').value.toLowerCase().split(/\s+/).filter(Boolean);
+  let shown = 0;
+  document.querySelectorAll<HTMLElement>('tr.mesh-row').forEach((row) => {
+    const m = a.meshes[Number(row.dataset.mesh)];
+    const text = [meshLabel(m), ...prototypeTags(m.name, importedTags(m.name))].join(' ').toLowerCase();
+    const hit = words.every((w) => text.includes(w));
+    row.hidden = !hit;
+    if (hit) shown++;
+  });
+  $('tileCount').textContent = words.length ? `${shown} / ${a.meshes.length}` : String(a.meshes.length);
+}
+$('tileSearch').addEventListener('input', applyTileSearch);
+$('tileSearch').addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const input = e.target as HTMLInputElement;
+  if (input.value) input.value = '';
+  else input.blur();
+  applyTileSearch();
+});
+
 document.addEventListener('keydown', (e) => {
   const mod = e.ctrlKey || e.metaKey;
   if (mod && e.key.toLowerCase() === 'o') {
@@ -1077,6 +1121,9 @@ document.addEventListener('keydown', (e) => {
   if (e.key === '?' || e.key === 'F1') {
     e.preventDefault();
     helpDialog.showModal();
+  } else if (e.key === '/') {
+    e.preventDefault();
+    $('tileSearch').focus();
   } else if (e.key === 'Escape') {
     toggleIssues(false);
     toggleTagFilter(false);

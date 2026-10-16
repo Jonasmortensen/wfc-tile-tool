@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { AXIS_PRESETS, fileToUnity, presetForMapping, validateMapping, type Vec3 } from './axis';
 import { analyze } from './analysis';
-import { ALL_FACES, extractFaces, faceEdges, makeProfile, mirrorH, profileToUnity, projectToFace, type Cell } from './profile';
-import { box, rawMesh, unitySettings } from './testUtils';
+import { ALL_FACES, extractFaces, faceEdges, makeProfile, mirrorH, profileToUnity, projectToFace, redundantPoints, type Cell, type Edge2, type PointTag } from './profile';
+import { box, quadMesh, rawMesh, unitySettings } from './testUtils';
 
 const CELL: Cell = { size: [1, 1, 1], pivot: 'bottom' };
 const EPS = 0.001;
@@ -165,6 +165,42 @@ describe('profileToUnity', () => {
         const back = profileToUnity(face, p, cell, EPS);
         back.forEach((c, i) => expect(c).toBeCloseTo(v[i], 6));
       });
+    }
+  });
+});
+
+describe('points that only subdivide an edge', () => {
+  const e = (a: [number, number], b: [number, number]): Edge2 => [a, b];
+
+  it('drops midpoints of straight edges, also several in a row', () => {
+    expect(redundantPoints([e([0, 0], [5, 0]), e([5, 0], [10, 0])])).toEqual(new Set(['5,0']));
+    expect(redundantPoints([e([0, 0], [2, 0]), e([2, 0], [7, 0]), e([7, 0], [10, 0])])).toEqual(new Set(['2,0', '7,0']));
+  });
+
+  it('keeps corners, junctions and points with surfaces the ends do not have', () => {
+    expect(redundantPoints([e([0, 0], [5, 0]), e([5, 0], [5, 5])]).size).toBe(0);
+    expect(redundantPoints([e([0, 0], [5, 0]), e([5, 0], [10, 0]), e([5, 0], [5, 5])]).size).toBe(0);
+    const up: PointTag = { facing: '', dirs: [[0, 1000]] };
+    const tags = new Map<string, PointTag>([['0,0', up], ['10,0', up], ['5,0', { facing: '', dirs: [[0, 1000], [1000, 0]] }]]);
+    expect(redundantPoints([e([0, 0], [5, 0]), e([5, 0], [10, 0])], tags).size).toBe(0);
+    tags.set('5,0', up);
+    expect(redundantPoints([e([0, 0], [5, 0]), e([5, 0], [10, 0])], tags)).toEqual(new Set(['5,0']));
+  });
+
+  it('gives a floor split into four quads the same side sockets as one quad', () => {
+    const floor = (name: string, xs: number[]) =>
+      quadMesh(
+        name,
+        xs.slice(1).flatMap((x1, i) =>
+          xs.slice(1).map((z1, j) => ({
+            corners: [[xs[i], 0, xs[j]], [x1, 0, xs[j]], [x1, 0, z1], [xs[i], 0, z1]] as [Vec3, Vec3, Vec3, Vec3],
+            front: [0, 1, 0] as Vec3,
+          })),
+        ),
+      );
+    const a = analyze([floor('One', [-0.5, 0.5]), floor('Four', [-0.5, 0, 0.5])], unitySettings());
+    for (const face of ['posX', 'negZ', 'negX', 'posZ'] as const) {
+      expect(a.meshes[1].faces[face].profile.key).toBe(a.meshes[0].faces[face].profile.key);
     }
   });
 });

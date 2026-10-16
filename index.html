@@ -41,13 +41,13 @@
               <input type="number" id="wfcSeed" min="0" step="1" value="1">
             </div>
             <div class="sub">Boundary</div>
-            <div class="prop" id="wfcOuterGroundRow" data-tip="Every side on the edge of the map in layer 0 must equal this socket (unreversed). Empty: any.">
-              <label for="wfcOuterGround">Inside</label>
-              <input id="wfcOuterGround" class="mono" list="wfcSides" placeholder="any">
-            </div>
-            <div class="prop" data-tip="Every side on the edge of the map must equal this socket (unreversed); above layer 0 when Inside is shown. Empty: any.">
-              <label for="wfcOuter">Outside</label>
+            <div class="prop" data-tip="Every side facing out of the map must equal this socket (unreversed); above layer 0 when Sides at ground level is shown. Empty: any.">
+              <label for="wfcOuter">Sides</label>
               <input id="wfcOuter" class="mono" list="wfcSides" placeholder="any">
+            </div>
+            <div class="prop" id="wfcOuterGroundRow" data-tip="Every side of layer 0 facing out of the map must equal this socket (unreversed). Empty: any.">
+              <label for="wfcOuterGround" class="wrap">Sides at ground level</label>
+              <input id="wfcOuterGround" class="mono" list="wfcSides" placeholder="any">
             </div>
             <div class="prop" data-tip="Required under layer 0 (exact). Empty: any.">
               <label for="wfcBottom">Bottom</label>
@@ -110,7 +110,12 @@
 
       <aside id="outliner">
         <div id="tileList">
-          <div class="panel-head">Tiles <span id="tileCount" class="badge"></span></div>
+          <div class="panel-head">Tiles <span id="tileCount" class="badge"></span>
+            <label class="search" data-icon="search" data-tip="Filter the list by name or tag (/)">
+              <input id="tileSearch" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search tiles">
+            </label>
+            <button id="resetWeights" class="icon-btn small" data-icon="reset" data-tip="Reset all weights to 1" aria-label="Reset weights" disabled></button>
+          </div>
           <div id="meshes"></div>
         </div>
         <div class="hsplitter"></div>

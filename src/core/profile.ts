@@ -275,10 +275,64 @@ export function isOpen(p: Profile): boolean {
   return p.points.length > 0 && p.facing.every((f) => f === 'o');
 }
 
+/** Whether every surface tag of `inner` is also on `outer`. */
+function tagWithin(inner: PointTag | undefined, outer: PointTag | undefined): boolean {
+  if (!inner) return true;
+  const f = inner.facing;
+  if (f && !(outer && (outer.facing === f || outer.facing === 'b'))) return false;
+  return inner.dirs.every((d) => outer?.dirs.some((o) => o[0] === d[0] && o[1] === d[1]));
+}
+
+/**
+ * Points that only subdivide a straight edge (keyed "u,v"): exactly two edges
+ * meet there, running on in the same direction, and the surfaces touching the
+ * point also touch both ends. Dropping them makes a profile independent of how
+ * finely its edges are split. Repeated, so a run of such points goes at once.
+ */
+export function redundantPoints(edges: readonly Edge2[], tags?: ReadonlyMap<string, PointTag>): Set<string> {
+  const key = (p: Point2) => `${p[0]},${p[1]}`;
+  const at = new Map<string, Point2>();
+  const adj = new Map<string, Set<string>>();
+  for (const [a, b] of edges) {
+    const [ka, kb] = [key(a), key(b)];
+    at.set(ka, a).set(kb, b);
+    if (!adj.has(ka)) adj.set(ka, new Set());
+    if (!adj.has(kb)) adj.set(kb, new Set());
+    adj.get(ka)!.add(kb);
+    adj.get(kb)!.add(ka);
+  }
+  const out = new Set<string>();
+  const queue = [...adj.keys()];
+  while (queue.length) {
+    const k = queue.pop()!;
+    const n = adj.get(k);
+    if (out.has(k) || !n || n.size !== 2) continue;
+    const [ka, kb] = [...n];
+    const [p, a, b] = [at.get(k)!, at.get(ka)!, at.get(kb)!];
+    const ab = [b[0] - a[0], b[1] - a[1]];
+    const ap = [p[0] - a[0], p[1] - a[1]];
+    const len = Math.hypot(ab[0], ab[1]);
+    // On the line through a and b (within a quantum, as coordinates are quantized) and strictly between them.
+    const between = ap[0] * ab[0] + ap[1] * ab[1];
+    if (Math.abs(ap[0] * ab[1] - ap[1] * ab[0]) > len || between <= 0 || between >= len * len) continue;
+    if (!tagWithin(tags?.get(k), tags?.get(ka)) || !tagWithin(tags?.get(k), tags?.get(kb))) continue;
+    out.add(k);
+    adj.delete(k);
+    adj.get(ka)!.delete(k);
+    adj.get(kb)!.delete(k);
+    adj.get(ka)!.add(kb);
+    adj.get(kb)!.add(ka);
+    queue.push(ka, kb);
+  }
+  return out;
+}
+
 /**
  * Collect the vertices lying within eps of each cell boundary plane and turn
  * them into canonical profiles. Vertices are Unity-space positions; `facing`
  * (from faceFacing) tags them by the way the surfaces touching them face.
+ * With `edges` (from faceEdges), points that only subdivide a straight edge
+ * are left out (see redundantPoints).
  */
 export function extractFaces(
   vertices: Iterable<Readonly<Vec3>>,
@@ -286,6 +340,7 @@ export function extractFaces(
   eps: number,
   facing?: Record<Face, ReadonlyMap<string, PointTag>>,
   space?: Record<Face, string>,
+  edges?: Record<Face, readonly Edge2[]>,
 ): Record<Face, FaceSample> {
   const { min, max } = cellBounds(cell);
   const pts: Record<Face, Point2[]> = { posX: [], negZ: [], negX: [], posZ: [], posY: [], negY: [] };
@@ -304,8 +359,9 @@ export function extractFaces(
   const out = {} as Record<Face, FaceSample>;
   for (const face of ALL_FACES) {
     const tags = facing?.[face];
+    const drop = edges ? redundantPoints(edges[face], tags) : new Set<string>();
     const profile = makeProfile(
-      pts[face].map((p) => {
+      pts[face].filter((p) => !drop.has(`${p[0]},${p[1]}`)).map((p) => {
         const t = tags?.get(`${p[0]},${p[1]}`);
         return [p[0], p[1], t?.facing ?? '', t?.dirs ?? []] as const;
       }),

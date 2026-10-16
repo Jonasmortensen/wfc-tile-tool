@@ -183,8 +183,8 @@ export function analyze(raws: readonly RawMesh[], s: Settings): Analysis {
     const emptySpace = raw.emptySpace ?? 'o';
     // Without sampling, every face is outside: like a tile with no surface in reach.
     const space = samplesSpace(raw, s) ? faceSpace(positions, raw.index, cell, flip, emptySpace) : faceSpace([], null, cell, flip, 'o');
-    const faces = extractFaces(vec3s(positions), cell, eps, facing, space);
     const edges = faceEdges(positions, raw.index, cell, eps);
+    const faces = extractFaces(vec3s(positions), cell, eps, facing, space, edges);
     for (const face of ALL_FACES) faces[face].edges = edges[face];
     // The generated empty tiles have no real position: only `ground` puts them on the ground.
     const grounded = raw.ground ?? (raw.emptySpace === undefined && originAtGround(raw, s));
@@ -356,27 +356,27 @@ export interface ExportJson {
 
 /**
  * Sockets required on the edge of the map, as the solve preview uses them.
- * Sides equal `outside` (unreversed), or `inside` in layer 0 when present;
+ * Sides equal `sides` (unreversed), or `ground_sides` in layer 0 when present;
  * `bottom` / `top` are required exactly under layer 0 / on top of the highest layer.
  * An empty string means any socket.
  */
 export interface BoundarySockets {
-  outside: string;
-  inside?: string;
+  sides: string;
+  ground_sides?: string;
   bottom: string;
   top: string;
 }
 
 const BOUNDARY_KEYS: Record<WfcBoundary, keyof BoundarySockets> = {
-  outer: 'outside',
-  outerGround: 'inside',
+  outer: 'sides',
+  outerGround: 'ground_sides',
   bottom: 'bottom',
   top: 'top',
 };
 
-/** The export section for the boundary sockets; `inside` only applies with top/bottom sockets. */
+/** The export section for the boundary sockets; `ground_sides` only applies with top/bottom sockets. */
 export function boundarySockets(b: Readonly<Record<WfcBoundary, string>>, vertical: boolean): BoundarySockets {
-  return { outside: b.outer, ...(vertical ? { inside: b.outerGround } : {}), bottom: b.bottom, top: b.top };
+  return { sides: b.outer, ...(vertical ? { ground_sides: b.outerGround } : {}), bottom: b.bottom, top: b.top };
 }
 
 /** Boundary values from an imported section, by setting; keys the section lacks are left out. */
@@ -500,21 +500,29 @@ export type WfcBoundary = 'outer' | 'outerGround' | 'bottom' | 'top';
 /**
  * Boundary defaults: the ground socket under layer 0 when some tile has it,
  * outside air around the sides and on top when the empty tile is on, and
- * outside ground around layer 0: of the symmetric sides of ground tiles, the
- * one with the most outside samples.
+ * for the sides of layer 0 a ground tile's side with outside samples: one
+ * with the same socket on all four sides (like a plain ground tile) when
+ * there is one, since it alone can fill the whole edge, corners included;
+ * otherwise any symmetric side. The most outside samples win, then file order.
  */
 export function wfcBoundaryDefaults(a: Analysis, protos: readonly Prototype[]): Record<WfcBoundary, string> {
   const air = a.meshes.findIndex((m) => m.name === EMPTY_NAME && m.emptySpace === 'o');
   const airSockets = air >= 0 ? protos[air].sockets : null;
+  const outsideCount = (m: MeshAnalysis, f: Face) => [...m.faces[f].profile.space].filter((c) => c === 'o').length;
   let outerGround = '';
-  let most = 0;
+  let best = { uniform: false, outside: 0 };
   for (const m of a.meshes) {
     if (!m.grounded) continue;
+    const sockets = protos[m.index].sockets;
+    const uniform = H_FACES.every((f) => sockets[f] === sockets.posX);
     for (const f of H_FACES) {
-      const profile = m.faces[f].profile;
-      if (!a.hProfiles.get(profile.key)!.symmetric) continue;
-      const outside = [...profile.space].filter((c) => c === 'o').length;
-      if (outside > most) [outerGround, most] = [protos[m.index].sockets[f]!, outside];
+      if (!a.hProfiles.get(m.faces[f].profile.key)!.symmetric) continue;
+      const outside = outsideCount(m, f);
+      if (!outside) continue;
+      if ((uniform && !best.uniform) || (uniform === best.uniform && outside > best.outside)) {
+        outerGround = sockets[f]!;
+        best = { uniform, outside };
+      }
     }
   }
   return {

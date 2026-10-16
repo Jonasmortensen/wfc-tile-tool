@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AXIS_PRESETS, cloneMapping, mappingDeterminant, type Vec3 } from './axis';
 import { analyze, computeIds, findUnmatchedFaces, meshSockets, rotateSockets, socketsFit } from './analysis';
-import { makeProfile, rotateV, rotateVec } from './profile';
+import { makeProfile, mirrorSpace, rotateV, rotateVec } from './profile';
 import { quadMesh, rawMesh, unitySettings } from './testUtils';
 
 type Quad = { corners: [Vec3, Vec3, Vec3, Vec3]; front: Vec3 };
@@ -119,6 +119,19 @@ describe('inside and outside space', () => {
     expect(m.faces.posX.profile.space).toBe('i'.repeat(16));
     // posZ reads -X to +X: outside then inside.
     expect(m.faces.posZ.profile.space).toBe('ooii'.repeat(4));
+  });
+
+  it('reads samples lying on a slope as in front of it, the same from both sides', () => {
+    // A 45° slope rising toward +X, running along Z: on posZ and negZ its line passes through 4 samples.
+    // Exported coordinates are a hair off (0.49999997), which decides how rays from those samples fall.
+    for (const j of [1e-7, -1e-7]) {
+      const corners: Quad['corners'] = [[-0.5 + j, 0, -0.5], [0.5, 1 - j, -0.5], [0.5 - j, 1, 0.5], [-0.5, j, 0.5]];
+      const [m] = analyze([quadMesh('Slope', [{ corners, front: [-1, 1, 0] }])], s).meshes;
+      // A copy of the tile along Z meets this posZ with its negZ: the two must be mirror images.
+      expect(m.faces.posZ.profile.space).toBe(mirrorSpace(m.faces.negZ.profile.space));
+      // Samples on the slope count as in front of it (outside), like those above it.
+      expect(m.faces.posZ.profile.space).toBe('oiii' + 'ooii' + 'oooi' + 'oooo');
+    }
   });
 
   it('labels the space beyond a surface lying in the face', () => {
