@@ -7,96 +7,158 @@
     <link rel="icon" href="data:," />
   </head>
   <body>
-    <header>
-      <h1>WFC Socket Tool</h1>
-      <span id="fileLabel" class="muted">No FBX loaded</span>
+    <header class="toolbar">
+      <div class="brand" data-icon="cube">WFC Sockets</div>
+      <div class="tb-group">
+        <button id="openBtn" class="ghost" data-icon="open" data-tip="Open an FBX of tile meshes (Ctrl+O)">Open</button>
+        <button id="importBtn" class="ghost" data-icon="import" data-tip="Reuse socket IDs and weights from an exported JSON">Import IDs</button>
+      </div>
+      <div id="fileChip" class="file-chip"></div>
+      <div id="importChip"></div>
       <span class="spacer"></span>
-      <button id="importBtn" title="Reuse socket IDs from an existing JSON">Import JSON…</button>
-      <button id="exportBtn" class="primary" disabled>Export JSON</button>
+      <button id="helpBtn" class="icon-btn" data-icon="help" data-tip="Help and Unity rules (?)" aria-label="Help"></button>
+      <button id="exportBtn" class="primary" data-icon="export" disabled data-tip="Download the socket JSON (Ctrl+S)">Export</button>
       <input type="file" id="fbxInput" accept=".fbx" hidden />
       <input type="file" id="jsonInput" accept=".json,application/json" hidden />
     </header>
+
     <main>
-      <aside id="sidebar">
-        <section id="dropZone" class="drop">
-          <strong>Drop an FBX here</strong>
-          <span class="muted">(or a JSON to import IDs)</span>
-          <button id="browseBtn">Browse…</button>
-        </section>
-        <section>
-          <h2>Settings</h2>
-          <div id="settings"></div>
-        </section>
-        <section id="importInfo"></section>
-        <section>
-          <details id="help" open>
-            <summary>Help &amp; Unity rules</summary>
-            <div class="help">
-              <h3>Matching</h3>
-              <p>Side neighbours fit when one socket equals the other <em>reversed</em> (<code>io</code> ↔ <code>oi</code>, <code>f</code> ↔ <code>f</code>). A tile fits on top of another when its <code>negY</code> equals the lower tile's <code>posY</code> exactly.</p>
-              <h3>Unity rotation rule</h3>
-              <blockquote>Turn k (Quaternion.Euler(0, 90k, 0), clockwise from above): side sockets move posX -&gt; negZ -&gt; negX -&gt; posZ -&gt; posX unchanged. Top/bottom sockets with 4 or 5 parts move their last side part to the front (a middle part stays last); 1-part faces are unchanged.</blockquote>
-              <h3>Side profiles</h3>
-              <p>Sides are read clockwise as seen from above (posX from +Z to −Z, negZ from +X to −X, …), so they are plotted as seen from <em>inside</em> the tile: u left to right, v up. Facing neighbours read the shared edge in opposite directions, so string reversal is the inverse. Symmetric profiles get palindromes; an asymmetric profile and its mirror get reversed strings. <code>|</code> is not allowed in side IDs.</p>
-              <h3>Top and bottom</h3>
-              <p>Plotted in Unity world (x, z) from above. With Vertical on, profiles equal under 90° rotation share a base letter: a face that looks the same in every rotation is one part (<code>A</code>), otherwise four parts like <code>B0|B1|B2|B3</code> that turn with the tile. With Vertical off, no top/bottom is written and Unity infers <code>posX|negZ|negX|posZ</code> from the sides.</p>
-              <h3>Surface orientation</h3>
-              <p>Points with a surface lying in a face plane also record which way it faces (from the triangle winding): out of the cell or into it. A roof on a tile's top and a ground on the bottom of the tile above share vertices but face the same way, so they would be two surfaces in one place; they get different sockets. Back-to-back surfaces (roof under a ceiling) match. Surfaces meeting a face edge-on (a wall ending at a side or crossing the top) record which way their front points, so a wall only continues or stacks on a wall facing the same way, like the handmade <code>io</code>/<code>oi</code> sockets.</p>
-              <h3>Inside and outside</h3>
-              <p>Each face is also sampled on a 4×4 grid: a sample is <em>outside</em> when the nearest surface seen from it shows its front, <em>inside</em> when it shows its back (inside wins a tie, nothing in reach counts as outside). Where a surface lies in the face, the sample takes the space beyond it, so a roof's top is outside. These labels are part of the socket, like the handmade <code>i</code> and <code>o</code>, so outside space only continues outside space. "Empty tile" adds both an outside and an inside air tile (both <code>-1</code>), so building interiors can be filled.</p>
-              <p>A face whose only surface faces out of the cell (a roof on the top face) is <em>open</em>: the tile is already closed there, so it gets the empty face's socket and air can sit next to it. Open sockets are dotted-underlined in the mesh table. A face that also has geometry crossing it (a wall carrying on upward) stays closed.</p>
-              <h3>Axes</h3>
-              <p>All face names use Unity axes after the axis mapping. Check the coloured axis labels in the preview against Unity's scene view.</p>
+      <aside id="inspector">
+        <div id="settings"></div>
+        <details class="sect" data-key="solve" open>
+          <summary>Solve</summary>
+          <div class="props">
+            <div class="prop" data-tip="Size of the solve grid in cells: X, layers (Y), Z.">
+              <label>Grid</label>
+              <div class="vec">
+                <label class="x"><span>X</span><input type="number" id="wfcX" min="1" max="32" step="1" value="10"></label>
+                <label class="y"><span>Y</span><input type="number" id="wfcY" min="1" max="8" step="1" value="3"></label>
+                <label class="z"><span>Z</span><input type="number" id="wfcZ" min="1" max="32" step="1" value="10"></label>
+              </div>
             </div>
-          </details>
-        </section>
-      </aside>
-      <div id="content">
-        <div class="top">
-          <div id="previewWrap">
-            <div id="preview"></div>
-            <div id="previewInfo"></div>
-            <div id="legend"></div>
-          </div>
-          <div id="meshes" class="panel"></div>
-        </div>
-        <section id="warnings" class="panel"></section>
-        <section id="wfc" class="panel">
-          <div class="wfc-head">
-            <h2>WFC solution preview</h2>
-            <div class="row">
-              <span class="muted">Grid</span>
-              <input type="number" id="wfcX" min="1" max="32" step="1" value="10" title="X cells">
-              <input type="number" id="wfcY" min="1" max="8" step="1" value="3" title="Y cells (layers)">
-              <input type="number" id="wfcZ" min="1" max="32" step="1" value="10" title="Z cells">
-              <span class="muted">Seed</span>
+            <div class="prop" data-tip="Random seed for the solve. Press R to roll a new one.">
+              <label for="wfcSeed">Seed</label>
               <input type="number" id="wfcSeed" min="0" step="1" value="1">
-              <button id="wfcNewSeed" title="Pick a random seed and solve">New seed</button>
-              <label class="row muted" title="Hide the back side of every face (by the FBX winding), like Unity's default culling"><input type="checkbox" id="wfcCull"> Cull back faces</label>
             </div>
-            <div class="row">
-              <span class="muted" id="wfcOuterGroundLabel" title="Every side on the edge of the map in layer 0 must equal this socket (unreversed). Empty: any.">Outer ground</span>
-              <input id="wfcOuterGround" class="sock-input" list="wfcSides" placeholder="any">
-              <span class="muted" id="wfcOuterLabel" title="Every side on the edge of the map must equal this socket (unreversed). Empty: any.">Outer</span>
-              <input id="wfcOuter" class="sock-input" list="wfcSides" placeholder="any">
-              <span class="muted" title="Required under layer 0 (exact). Empty: any.">Bottom</span>
-              <input id="wfcBottom" class="sock-input" list="wfcFaces" placeholder="any">
-              <span class="muted" title="Required on top of the highest layer (exact). Empty: any.">Top</span>
-              <input id="wfcTop" class="sock-input" list="wfcFaces" placeholder="any">
-              <datalist id="wfcSides"></datalist>
-              <datalist id="wfcFaces"></datalist>
+            <div class="sub">Boundary</div>
+            <div class="prop" id="wfcOuterGroundRow" data-tip="Every side on the edge of the map in layer 0 must equal this socket (unreversed). Empty: any.">
+              <label for="wfcOuterGround">Inside</label>
+              <input id="wfcOuterGround" class="mono" list="wfcSides" placeholder="any">
             </div>
-            <span id="wfcStatus" class="muted"></span>
+            <div class="prop" data-tip="Every side on the edge of the map must equal this socket (unreversed); above layer 0 when Inside is shown. Empty: any.">
+              <label for="wfcOuter">Outside</label>
+              <input id="wfcOuter" class="mono" list="wfcSides" placeholder="any">
+            </div>
+            <div class="prop" data-tip="Required under layer 0 (exact). Empty: any.">
+              <label for="wfcBottom">Bottom</label>
+              <input id="wfcBottom" class="mono" list="wfcFaces" placeholder="any">
+            </div>
+            <div class="prop" data-tip="Required on top of the highest layer (exact). Empty: any.">
+              <label for="wfcTop">Top</label>
+              <input id="wfcTop" class="mono" list="wfcFaces" placeholder="any">
+            </div>
+            <datalist id="wfcSides"></datalist>
+            <datalist id="wfcFaces"></datalist>
           </div>
-          <div id="wfcWrap">
-            <div id="wfcView"></div>
-            <div id="wfcTooltip"></div>
+        </details>
+      </aside>
+      <div class="splitter" data-panel="inspector"></div>
+
+      <section id="center">
+        <nav class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="solve" data-tip="Run WFC on the sockets as exported. Click a tile to inspect it. (1)">Solve <span id="solveDot" class="dot"></span></button>
+          <button class="tab" role="tab" data-tab="profiles" data-tip="Face profiles and their socket IDs (2)">Profiles <span id="profileCount" class="badge"></span></button>
+        </nav>
+        <div class="panes">
+          <div class="tab-pane" data-pane="solve">
+            <div class="viewport">
+              <div id="wfcView" class="vp-canvas"></div>
+              <div id="wfcTooltip"></div>
+              <div class="vp-overlay tl"><span id="wfcStatus" class="pill"></span></div>
+              <div class="vp-overlay tr">
+                <label class="vp-btn" data-tip="Hide the back side of every face (by the FBX winding), like Unity's default culling">
+                  <input type="checkbox" id="wfcCull" hidden><span data-icon="cull">Cull</span>
+                </label>
+                <button id="wfcNewSeed" class="vp-btn" data-icon="dice" data-tip="Roll a new seed and solve (R)">Reroll</button>
+              </div>
+            </div>
           </div>
-          <div id="wfcLegend"></div>
-        </section>
-        <section id="idTables" class="panel"></section>
-      </div>
+          <div class="tab-pane scroll" data-pane="profiles">
+            <div id="idTables"></div>
+          </div>
+          <div id="emptyState" class="empty">
+            <div class="empty-card">
+              <div class="empty-icon" data-icon="cube"></div>
+              <div class="empty-title">Drop an FBX to start</div>
+              <div class="muted">Every mesh becomes a tile. Drop an exported JSON to reuse its IDs.</div>
+              <button id="browseBtn" class="primary" data-icon="open">Open FBX…</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <div class="splitter" data-panel="outliner"></div>
+
+      <aside id="outliner">
+        <div id="tileList">
+          <div class="panel-head">Tiles <span id="tileCount" class="badge"></span></div>
+          <div id="meshes"></div>
+        </div>
+        <div class="hsplitter"></div>
+        <div id="tilePanel">
+          <div class="viewport">
+            <div id="preview" class="vp-canvas"></div>
+            <div class="vp-overlay tl" id="previewInfo"></div>
+            <div class="vp-overlay bl legend" id="legend"></div>
+          </div>
+        </div>
+      </aside>
     </main>
+
+    <footer class="statusbar">
+      <span id="statusMsg"></span>
+      <span class="spacer"></span>
+      <button id="issuesBtn" class="status-btn" hidden></button>
+    </footer>
+
+    <div id="issuesPanel" class="popover" hidden>
+      <div class="popover-head">Issues<button id="issuesClose" class="icon-btn small" data-icon="x" aria-label="Close"></button></div>
+      <div id="issuesList"></div>
+    </div>
+
+    <dialog id="helpDialog">
+      <div class="dialog-head">Help &amp; Unity rules<button class="icon-btn small" data-icon="x" aria-label="Close" onclick="this.closest('dialog').close()"></button></div>
+      <div class="help" tabindex="-1" autofocus>
+        <h3>Matching</h3>
+        <p>Side neighbours fit when one socket equals the other <em>reversed</em> (<code>io</code> ↔ <code>oi</code>, <code>f</code> ↔ <code>f</code>). A tile fits on top of another when its <code>negY</code> equals the lower tile's <code>posY</code> exactly.</p>
+        <h3>Unity rotation rule</h3>
+        <blockquote>Turn k (Quaternion.Euler(0, 90k, 0), clockwise from above): side sockets move posX -&gt; negZ -&gt; negX -&gt; posZ -&gt; posX unchanged. Top/bottom sockets with 4 or 5 parts move their last side part to the front (a middle part stays last); 1-part faces are unchanged.</blockquote>
+        <h3>Side profiles</h3>
+        <p>Sides are read clockwise as seen from above (posX from +Z to −Z, negZ from +X to −X, …), so they are plotted as seen from <em>inside</em> the tile: u left to right, v up. Facing neighbours read the shared edge in opposite directions, so string reversal is the inverse. Symmetric profiles get palindromes; an asymmetric profile and its mirror get reversed strings. <code>|</code> is not allowed in side IDs.</p>
+        <h3>Top and bottom</h3>
+        <p>Plotted in Unity world (x, z) from above. With Top / bottom on, profiles equal under 90° rotation share a base letter: a face that looks the same in every rotation is one part (<code>A</code>), otherwise four parts like <code>B0|B1|B2|B3</code> that turn with the tile. With it off, no top/bottom is written and Unity infers <code>posX|negZ|negX|posZ</code> from the sides.</p>
+        <h3>Surface orientation</h3>
+        <p>Points with a surface lying in a face plane also record which way it faces (from the triangle winding): out of the cell or into it. A roof on a tile's top and a ground on the bottom of the tile above share vertices but face the same way, so they would be two surfaces in one place; they get different sockets. Back-to-back surfaces (roof under a ceiling) match. Surfaces meeting a face edge-on (a wall ending at a side or crossing the top) record which way their front points, so a wall only continues or stacks on a wall facing the same way, like the handmade <code>io</code>/<code>oi</code> sockets.</p>
+        <h3>Inside and outside</h3>
+        <p>Each face is also sampled on a 4×4 grid: a sample is <em>outside</em> when the nearest surface seen from it shows its front, <em>inside</em> when it shows its back (inside wins a tie, nothing in reach counts as outside). Where a surface lies in the face, the sample takes the space beyond it, so a roof's top is outside. These labels are part of the socket, like the handmade <code>i</code> and <code>o</code>, so outside space only continues outside space. "Empty tiles" adds both an outside and an inside air tile (both <code>-1</code>), so building interiors can be filled.</p>
+        <p>A face whose only surface faces out of the cell (a roof on the top face) is <em>open</em>: the tile is already closed there, so it gets the empty face's socket and air can sit next to it. Open sockets are dotted-underlined in the tile list. A face that also has geometry crossing it (a wall carrying on upward) stays closed.</p>
+        <h3>Reading the profile plots</h3>
+        <p>Lines are mesh edges in the face plane. Squares mark surfaces lying in the face: filled ■ faces out of the cell, hollow □ faces into it. Dotted ticks show which way the front of a surface meeting the face edge-on (a wall) points. Shaded areas are inside (behind a surface), unshaded outside.</p>
+        <h3>Axes</h3>
+        <p>All face names use Unity axes after the axis mapping. Check the coloured axis labels in the tile inspector (bottom right) against Unity's scene view.</p>
+        <h3>Shortcuts</h3>
+        <table class="keys">
+          <tr><td><kbd>Ctrl</kbd> <kbd>O</kbd></td><td>Open FBX</td></tr>
+          <tr><td><kbd>Ctrl</kbd> <kbd>S</kbd></td><td>Export JSON</td></tr>
+          <tr><td><kbd>1</kbd> <kbd>2</kbd></td><td>Solve, Profiles</td></tr>
+          <tr><td><kbd>R</kbd></td><td>New seed</td></tr>
+          <tr><td><kbd>?</kbd></td><td>This help</td></tr>
+        </table>
+      </div>
+    </dialog>
+
+    <div id="dropOverlay"><div data-icon="import">Drop an FBX, or a JSON to reuse its IDs</div></div>
+    <div id="toasts"></div>
+    <div id="tooltip" role="tooltip"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

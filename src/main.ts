@@ -12,6 +12,8 @@ import {
 } from './core/axis';
 import {
   analyze,
+  boundarySockets,
+  importedBoundary,
   buildExport,
   computeIds,
   defaultSettings,
@@ -42,11 +44,40 @@ import { plotH, plotV } from './ui/plots';
 import { BACK_FACE_COLOR, FACE_COLORS, Preview } from './ui/preview';
 import { SolutionView, protoColor } from './ui/solution';
 import { buildVariants, solveWfc, type WfcResult } from './core/wfc';
+import { ICONS, injectIcons } from './ui/icons';
+import { installTooltips } from './ui/tooltip';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+
+/** UI preferences (tab, panel widths, open sections); storage can be unavailable. */
+const prefs = {
+  get(key: string): string | null {
+    try {
+      return localStorage.getItem(`wfc-tool:${key}`);
+    } catch {
+      return null;
+    }
+  },
+  set(key: string, value: string) {
+    try {
+      localStorage.setItem(`wfc-tool:${key}`, value);
+    } catch {
+      /* not persisted */
+    }
+  },
+};
+
+function toast(text: string, level: 'error' | 'info' = 'error') {
+  const el = document.createElement('div');
+  el.className = `toast ${level}`;
+  el.textContent = text;
+  $('toasts').append(el);
+  setTimeout(() => el.classList.add('out'), 4500);
+  setTimeout(() => el.remove(), 4900);
 }
 
 const state = {
@@ -63,7 +94,6 @@ const state = {
   importMessages: [] as string[],
   weights: [] as number[],
   selected: 0,
-  idError: '',
   loadError: '',
   unitNote: '',
   /** Add the format's empty tiles (mesh_name "-1"), outside and inside air, to the prototypes. */
@@ -73,7 +103,7 @@ const state = {
     seed: 1,
     /** Boundary sockets; empty means unconstrained. */
     outer: '',
-    /** Sides of layer 0, used instead of `outer` there when Vertical is on. */
+    /** Sides of layer 0, used instead of `outer` there when top/bottom sockets are on. */
     outerGround: '',
     bottom: '',
     top: '',
@@ -157,7 +187,7 @@ async function loadFbx(file: File) {
       unitFactor === null
         ? 'No UnitScaleFactor found in the FBX; scale left unchanged.'
         : `FBX UnitScaleFactor ${unitFactor} → scale ${+(unitFactor / 100).toPrecision(6)}, matching Unity's "Convert Units".`;
-    $('scaleHint').textContent = state.unitNote;
+    $('scaleRow').dataset.tip = `${SCALE_TIP}\n\n${state.unitNote}`;
     state.fileName = file.name;
     state.raws = raws;
     state.weights = raws.map((r) => importedWeight(r.name) ?? 1);
@@ -171,6 +201,7 @@ async function loadFbx(file: File) {
     recompute(true);
   } catch (e) {
     state.loadError = `Could not load ${file.name}: ${(e as Error).message}`;
+    toast(state.loadError);
     render(false);
   }
 }
@@ -209,6 +240,15 @@ async function loadJson(file: File) {
   try {
     state.imported = parseImport(await file.text());
     state.importedName = file.name;
+    // Boundary sockets from the file replace the inputs' defaults, as if typed in.
+    const boundary = importedBoundary(state.imported.boundary_sockets ?? {});
+    for (const [key, id] of WFC_BOUNDARY_INPUTS) {
+      const value = boundary[key];
+      if (value === undefined) continue;
+      state.wfc[key] = value;
+      state.wfc.edited.add(key);
+      $<HTMLInputElement>(id).value = value;
+    }
     tileRaws().forEach((r, i) => {
       const w = importedWeight(r.name);
       if (w !== undefined) state.weights[i] = w;
@@ -217,6 +257,7 @@ async function loadJson(file: File) {
     recompute(false);
   } catch (e) {
     state.loadError = `Could not import ${file.name}: ${(e as Error).message}`;
+    toast(state.loadError);
     render(false);
   }
 }
@@ -229,7 +270,6 @@ function handleFile(file: File) {
 // ---------------------------------------------------------------- analysis
 
 function recompute(resetView: boolean) {
-  state.idError = '';
   state.importMessages = [];
   if (!state.raws.length || validateMapping(state.settings.axis)) {
     state.analysis = null;
@@ -287,47 +327,71 @@ function buildSettings() {
   const presetOptions = Object.entries(AXIS_PRESETS)
     .map(([id, p]) => `<option value="${id}">${esc(p.label)}</option>`)
     .join('');
-  $('settings').innerHTML = `
-    <div class="settings-grid">
-      <label>Cell size</label>
-      <div class="row">
-        <input type="number" id="cellX" step="any" min="0" value="${s.cellSize[0]}" title="X">
-        <input type="number" id="cellY" step="any" min="0" value="${s.cellSize[1]}" title="Y">
-        <input type="number" id="cellZ" step="any" min="0" value="${s.cellSize[2]}" title="Z">
-      </div>
-      <label for="pivot">Pivot</label>
-      <select id="pivot">
-        <option value="bottom">Bottom-center</option>
-        <option value="center">Center</option>
-      </select>
-      <label for="epsilon">Epsilon</label>
-      <input type="number" id="epsilon" step="any" min="0" value="${s.epsilon}">
-      <label for="scale">Scale</label>
-      <input type="number" id="scale" step="any" min="0" value="${s.scale}" title="Multiplier on file positions. Set automatically from the FBX's UnitScaleFactor on load.">
-      <div class="hint" id="scaleHint">Set automatically from the FBX units on load.</div>
-      <label for="ignoreTranslation">Object position</label>
-      <label class="row"><input type="checkbox" id="ignoreTranslation"> ignore (tiles laid out apart)</label>
-      <label for="axisPreset">Axes</label>
-      <select id="axisPreset">${presetOptions}<option value="manual">Manual</option></select>
-      <div class="hint" id="axisHint"></div>
-      <label>Manual</label>
-      <div class="axis-grid">
-        ${(['x', 'y', 'z'] as const)
+  const prop = (label: string, tip: string, control: string, attrs = '') =>
+    `<div class="prop" data-tip="${esc(tip)}" ${attrs}><label>${label}</label>${control}</div>`;
+  const toggle = (id: string) => `<div class="ctl"><label class="switch"><input type="checkbox" id="${id}"><span></span></label></div>`;
+  const section = (key: string, title: string, body: string) =>
+    `<details class="sect" data-key="${key}" open><summary>${title}</summary><div class="props">${body}</div></details>`;
+  $('settings').innerHTML =
+    section(
+      'import',
+      'Import',
+      prop('Scale', SCALE_TIP, `<input type="number" id="scale" step="any" min="0" value="${s.scale}">`, 'id="scaleRow"') +
+        prop('Axes', '', `<select id="axisPreset">${presetOptions}<option value="manual">Manual</option></select>`, 'id="axisRow"') +
+        prop(
+          'Unity from',
+          'The file axis each Unity axis comes from.',
+          `<div class="vec">${(['x', 'y', 'z'] as const)
+            .map(
+              (k) =>
+                `<label class="${k}"><span>${k.toUpperCase()}</span><select id="axis_${k}">${sources
+                  .map((o) => `<option value="${o}">${o}</option>`)
+                  .join('')}</select></label>`,
+            )
+            .join('')}</div>`,
+          'id="axisManual"',
+        ) +
+        `<div class="prop-error" id="axisError"></div>` +
+        prop(
+          'Ignore position',
+          "Ignore each object's position in the file, for tiles laid out side by side.",
+          toggle('ignoreTranslation'),
+        ),
+    ) +
+    section(
+      'cell',
+      'Cell',
+      prop(
+        'Size',
+        'Size of one tile cell in Unity units.',
+        `<div class="vec">${(['X', 'Y', 'Z'] as const)
           .map(
-            (k) =>
-              `<span>Unity ${k.toUpperCase()} =</span><select id="axis_${k}">${sources
-                .map((o) => `<option value="${o}">file ${o}</option>`)
-                .join('')}</select>`,
+            (k, i) =>
+              `<label class="${k.toLowerCase()}"><span>${k}</span><input type="number" id="cell${k}" step="any" min="0" value="${s.cellSize[i]}"></label>`,
           )
-          .join('')}
-      </div>
-      <div class="hint error-text" id="axisError"></div>
-      <label for="vertical">Vertical</label>
-      <label class="row"><input type="checkbox" id="vertical"> posY / negY sockets</label>
-      <div class="hint">Off: Unity infers top and bottom from the sides (posX|negZ|negX|posZ), which assumes straight prisms.</div>
-      <label for="emptyTile">Empty tile</label>
-      <label class="row"><input type="checkbox" id="emptyTile"> add "-1" outside and inside air, and inside air on the ground</label>
-    </div>`;
+          .join('')}</div>`,
+      ) +
+        prop(
+          'Pivot',
+          "Where each tile's origin sits in its cell.",
+          `<select id="pivot"><option value="bottom">Bottom center</option><option value="center">Center</option></select>`,
+        ) +
+        prop(
+          'Epsilon',
+          'Tolerance for points counting as on a face, and as equal.',
+          `<input type="number" id="epsilon" step="any" min="0" value="${s.epsilon}">`,
+        ),
+    ) +
+    section(
+      'sockets',
+      'Sockets',
+      prop(
+        'Top / bottom',
+        'Write posY / negY sockets.\n\nOff: Unity infers top and bottom from the sides (posX|negZ|negX|posZ), which assumes straight prisms.',
+        toggle('vertical'),
+      ) +
+        prop('Empty tiles', 'Add "-1" air tiles: outside air, inside air, and inside air on the ground.', toggle('emptyTile')),
+    );
   syncSettingsInputs();
 
   const num = (id: string) => {
@@ -375,10 +439,16 @@ function syncSettingsInputs(preset: AxisPresetId = presetForMapping(state.settin
   $<HTMLInputElement>('vertical').checked = s.vertical;
   $<HTMLInputElement>('emptyTile').checked = state.emptyTile;
   $<HTMLSelectElement>('axisPreset').value = preset;
-  $('axisHint').textContent = preset === 'manual' ? 'Pick the file axis each Unity axis comes from.' : AXIS_PRESETS[preset].description;
+  $('axisRow').dataset.tip =
+    preset === 'manual' ? 'Pick the file axis each Unity axis comes from.' : AXIS_PRESETS[preset].description;
+  $('axisManual').hidden = preset !== 'manual';
   for (const k of ['x', 'y', 'z'] as const) $<HTMLSelectElement>(`axis_${k}`).value = describeSource(s.axis[k]);
-  $('axisError').textContent = validateMapping(s.axis) ?? '';
+  const err = validateMapping(s.axis);
+  $('axisError').textContent = err ?? '';
+  $('axisError').hidden = !err;
 }
+
+const SCALE_TIP = 'Multiplier on file positions. Set from the FBX UnitScaleFactor on load.';
 
 // ---------------------------------------------------------------- rendering
 
@@ -393,24 +463,31 @@ function currentSockets() {
 
 function render(resetView: boolean) {
   const a = state.analysis;
-  $('fileLabel').textContent = state.fileName ? `${state.fileName} · ${state.raws.length} mesh(es)` : 'No FBX loaded';
-  $<HTMLButtonElement>('exportBtn').disabled = !a;
-  $('importInfo').innerHTML = state.imported
-    ? `<div class="muted">IDs imported from <strong>${esc(state.importedName)}</strong> (${state.imported.prototypes.length} prototypes). <button id="clearImport">Clear</button></div>`
+  $('fileChip').innerHTML = state.fileName
+    ? `${esc(state.fileName)} <span class="muted">${state.raws.length} mesh${state.raws.length === 1 ? '' : 'es'}</span>`
     : '';
+  document.title = state.fileName ? `${state.fileName} · WFC Socket Tool` : 'WFC Socket Tool';
+  $<HTMLButtonElement>('exportBtn').disabled = !a;
+  $('importChip').innerHTML = state.imported
+    ? `<span class="chip" data-tip="Socket IDs and weights are reused from ${esc(state.importedName)} (${state.imported.prototypes.length} prototypes).">IDs: ${esc(state.importedName)}<button id="clearImport" data-icon="x" aria-label="Stop reusing imported IDs"></button></span>`
+    : '';
+  injectIcons($('importChip'));
   $('clearImport')?.addEventListener('click', () => {
     state.imported = null;
     recompute(false);
   });
+  $('emptyState').hidden = state.raws.length > 0;
 
   if (!a) {
     preview.show(null, null, state.settings, resetView);
-    $('previewInfo').textContent = '';
-    $('meshes').innerHTML = `<div class="placeholder">Load an FBX containing your tile meshes.</div>`;
+    $('previewInfo').innerHTML = '';
+    $('legend').innerHTML = '';
+    $('tileCount').textContent = '';
+    $('profileCount').textContent = '';
+    $('meshes').innerHTML = `<div class="placeholder">${state.raws.length ? 'Fix the axis mapping to analyse the tiles.' : 'No tiles loaded.'}</div>`;
     const errs = [state.loadError, validateMapping(state.settings.axis)].filter(Boolean) as string[];
-    $('warnings').innerHTML = errs.length
-      ? `<h2>Warnings</h2><ul>${errs.map((e) => `<li class="error">${esc(e)}</li>`).join('')}</ul>`
-      : `<h2>Warnings</h2><div class="muted">Nothing loaded.</div>`;
+    renderIssues(errs.map((text) => ({ level: 'error', text })));
+    $('statusMsg').textContent = state.raws.length ? '' : 'Ready';
     $('idTables').innerHTML = '';
     solveAndRender(resetView);
     return;
@@ -420,7 +497,11 @@ function render(resetView: boolean) {
   const unmatched = findUnmatchedFaces(sockets);
   renderMeshes(sockets, unmatched);
   renderWarnings(sockets, unmatched);
-  renderIdTables();
+  const counts = renderIdTables();
+  $('tileCount').textContent = String(a.meshes.length);
+  $('profileCount').textContent = String(counts.h + counts.v);
+  $('statusMsg').textContent =
+    `${a.meshes.length} tiles · ${counts.h} side profiles` + (state.settings.vertical ? ` · ${counts.v} top/bottom profiles` : '');
   renderPreview(resetView);
   solveAndRender(resetView);
 }
@@ -431,12 +512,14 @@ function renderPreview(resetView: boolean) {
   preview.show(m, state.raws[state.selected]?.index, state.settings, resetView);
   const fmt = (v: number[]) => v.map((x) => +x.toFixed(3)).join(', ');
   $('previewInfo').innerHTML = m
-    ? `<strong>${esc(meshLabel(m))}</strong> · ${m.positions.length / 3} verts` +
-      (m.bounds ? `<br>bounds (${fmt(m.bounds.min)}) – (${fmt(m.bounds.max)})` : '')
+    ? `<span class="pill"${m.bounds ? ` data-tip="Bounds (${fmt(m.bounds.min)}) to (${fmt(m.bounds.max)})"` : ''}>` +
+      `<strong>${esc(meshLabel(m))}</strong><span class="muted">${m.positions.length / 3} verts</span></span>`
     : '';
-  $('legend').innerHTML = ALL_FACES.filter((f) => state.settings.vertical || H_FACES.includes(f as never))
-    .map((f) => `<span><span class="swatch" style="background:${FACE_COLORS[f]}"></span>${f}</span>`)
-    .join('') + `<span><span class="swatch" style="background:#${BACK_FACE_COLOR.toString(16).padStart(6, '0')}"></span>back face</span>`;
+  $('legend').innerHTML =
+    ALL_FACES.filter((f) => state.settings.vertical || H_FACES.includes(f as never))
+      .map((f) => `<span class="key"><span class="swatch" style="background:${FACE_COLORS[f]}"></span>${f}</span>`)
+      .join('') +
+    `<span class="key" data-tip="Back faces by the FBX winding"><span class="swatch" style="background:#${BACK_FACE_COLOR.toString(16).padStart(6, '0')}"></span>back</span>`;
 }
 
 function renderMeshes(sockets: ReturnType<typeof currentSockets>, unmatched: FaceRef[]) {
@@ -446,39 +529,58 @@ function renderMeshes(sockets: ReturnType<typeof currentSockets>, unmatched: Fac
   for (const m of a.meshes) if (m.name !== EMPTY_NAME) counts.set(m.name, (counts.get(m.name) ?? 0) + 1);
   const bad = new Set(unmatched.map((u) => `${u.mesh}:${u.face}`));
   $('meshes').innerHTML = `
-    <h2>Meshes</h2>
     <table>
       <thead><tr><th>Name</th>${faces
         .map((f) => `<th><span class="swatch" style="background:${FACE_COLORS[f]}"></span>${f}</th>`)
-        .join('')}<th>Weight</th></tr></thead>
+        .join('')}<th class="num" data-tip="Weight: relative chance to be picked. 0 = only as a fallback.">Wt</th><th class="num" data-tip="Tiles placed in the current solve">Used</th></tr></thead>
       <tbody>${a.meshes
-        .map(
-          (m, i) => `
+        .map((m, i) => {
+          const dup = (counts.get(m.name) ?? 0) > 1;
+          const flag = m.outsideCount
+            ? `<span class="flag" data-tip="${m.outsideCount} of ${m.positions.length / 3} vertices lie outside the cell">${ICONS.alert}</span>`
+            : '';
+          return `
         <tr class="mesh-row${i === state.selected ? ' selected' : ''}" data-mesh="${i}">
-          <td class="${(counts.get(m.name) ?? 0) > 1 ? 'name-dup' : ''}">${esc(meshLabel(m))}${m.outsideCount ? ' ⚠' : ''}</td>
+          <td><div class="name${dup ? ' name-dup' : ''}"${dup ? ' data-tip="Duplicate mesh name"' : ''}><span class="swatch sq" style="background:#${protoColor(i).getHexString()}"></span><span class="label">${esc(meshLabel(m))}</span>${flag}</div></td>
           ${faces
             .map((f) => {
               const isBad = bad.has(`${i}:${f}`);
               const open = m.faces[f].open;
-              const title = isBad
+              const tip = isBad
                 ? 'No tile in any rotation can sit on this side'
                 : open
-                  ? `${f}: open (only a surface facing out of the cell), matches an empty face`
-                  : f;
-              return `<td class="sock${isBad ? ' bad' : ''}${open ? ' open' : ''}" title="${title}">${esc(sockets[i][f] ?? '')}</td>`;
+                  ? 'Open: only a surface facing out of the cell, so it matches an empty face'
+                  : '';
+              return `<td class="sock${isBad ? ' bad' : ''}${open ? ' open' : ''}"${tip ? ` data-tip="${tip}"` : ''}>${esc(sockets[i][f] ?? '')}</td>`;
             })
             .join('')}
-          <td><input type="number" class="weight" data-mesh="${i}" min="0" step="any" value="${state.weights[i] ?? 1}"></td>
-        </tr>`,
-        )
+          <td class="num"><input type="number" class="weight" data-mesh="${i}" min="0" step="any" value="${state.weights[i] ?? 1}"></td>
+          <td class="num placed" data-mesh="${i}"></td>
+        </tr>`;
+        })
         .join('')}</tbody>
     </table>`;
+}
+
+type Issue = { level: 'error' | 'warn'; text: string };
+
+function renderIssues(items: Issue[]) {
+  const errors = items.filter((i) => i.level === 'error').length;
+  const btn = $('issuesBtn');
+  btn.hidden = !state.raws.length && !items.length;
+  btn.className = `status-btn ${errors ? 'error' : items.length ? 'warn' : 'ok'}`;
+  btn.innerHTML = items.length
+    ? `${ICONS.alert}${items.length} issue${items.length > 1 ? 's' : ''}`
+    : `${ICONS.check}No issues`;
+  $('issuesList').innerHTML = items.length
+    ? `<ul>${items.map((i) => `<li class="${i.level}">${ICONS.alert}<span>${esc(i.text)}</span></li>`).join('')}</ul>`
+    : '<div class="ok">No problems found.</div>';
 }
 
 function renderWarnings(sockets: ReturnType<typeof currentSockets>, unmatched: FaceRef[]) {
   const a = state.analysis!;
   const s = state.settings;
-  const items: { level: 'error' | 'warn'; text: string }[] = [];
+  const items: Issue[] = [];
   if (state.loadError) items.push({ level: 'error', text: state.loadError });
 
   const counts = new Map<string, number>();
@@ -516,18 +618,17 @@ function renderWarnings(sockets: ReturnType<typeof currentSockets>, unmatched: F
   }
   for (const msg of state.importMessages) items.push({ level: 'warn', text: msg });
 
-  $('warnings').innerHTML = `<h2>Warnings</h2>${
-    items.length
-      ? `<ul>${items.map((i) => `<li class="${i.level}">${esc(i.text)}</li>`).join('')}</ul>`
-      : '<div class="ok">No problems found.</div>'
-  }`;
+  renderIssues(items);
 }
 
 function usageCell(refs: FaceRef[]): string {
-  return `<span class="usage" title="${esc(refs.map(faceLabel).join('\n'))}">${refs.length}</span>`;
+  return `<span class="usage" data-tip="${esc(refs.map(faceLabel).join('\n'))}">${refs.length}</span>`;
 }
 
-function renderIdTables() {
+const info = (tip: string) => `<span class="info" data-tip="${esc(tip)}">${ICONS.info}</span>`;
+
+/** Renders the profile tables; returns the number of rows in each. */
+function renderIdTables(): { h: number; v: number } {
   const a = state.analysis!;
   const s = state.settings;
   const eps = s.epsilon;
@@ -581,22 +682,23 @@ function renderIdTables() {
       })
       .join('');
     vSection = `
-      <h2>Vertical profiles (posY / negY)</h2>
+      <h2>Top / bottom profiles ${info('posY / negY faces, plotted in Unity (x, z) from above. Profiles equal under 90° rotation share a base letter; 4-part sockets turn with the tile.')}</h2>
       <table>
-        <thead><tr><th>Profile (from above)</th><th>Canonical</th><th>Period</th><th>Base</th><th>Socket</th><th>Rotation</th><th>Faces</th></tr></thead>
+        <thead><tr><th>Profile</th><th>Canonical</th><th data-tip="Quarter turns after which the profile repeats">Period</th><th>Base</th><th>Socket</th><th data-tip="Quarter turns from the canonical form">Rotation</th><th data-tip="Faces using this profile">Faces</th></tr></thead>
         <tbody>${vRows}</tbody>
       </table>`;
   }
 
   $('idTables').innerHTML = `
-    <div class="id-error" id="idError">${esc(state.idError)}</div>
-    <h2>Horizontal profiles</h2>
-    <div class="muted plot-key">Lines are mesh edges in the face plane. Squares mark surfaces lying in the face: filled ■ faces out of the cell, hollow □ faces into it. Dotted ticks show which way the front of a surface meeting the face edge-on (a wall) points. Shaded areas are inside (behind a surface), unshaded outside. Tiles only match back to back, so a roof (out) and a ground (in) on the same outline get different sockets, and a wall only continues a wall facing the same way.</div>
+    <h2>Side profiles ${info(
+      'Seen from inside the tile. Lines are mesh edges in the face plane. Filled ■ = surface in the face facing out of the cell, hollow □ = facing in. Dotted ticks: which way an edge-on surface (a wall) faces. Shaded = inside.\n\nEdit an ID to rename it; its mirror follows.',
+    )}</h2>
     <table>
-      <thead><tr><th>Profile (from inside)</th><th>Mirror</th><th>Symmetric</th><th>ID</th><th>Mirror ID</th><th>Faces (profile / mirror)</th></tr></thead>
+      <thead><tr><th>Profile</th><th>Mirror</th><th>Symmetric</th><th>ID</th><th>Mirror ID</th><th data-tip="Faces using the profile / its mirror">Faces</th></tr></thead>
       <tbody>${hRows}</tbody>
     </table>
     ${vSection}`;
+  return { h: shown.size, v: s.vertical ? a.vProfiles.size : 0 };
 }
 
 // ---------------------------------------------------------------- WFC preview
@@ -630,15 +732,16 @@ function solveAndRender(resetView: boolean) {
   $<HTMLButtonElement>('wfcNewSeed').disabled = !a;
   // With top and bottom sockets the ground level is told apart: it gets its own outer socket.
   const split = state.settings.vertical;
-  $('wfcOuterGroundLabel').hidden = $('wfcOuterGround').hidden = !split;
-  $('wfcOuterLabel').textContent = split ? 'Outer air' : 'Outer';
+  $('wfcOuterGroundRow').hidden = !split;
   const status = $('wfcStatus');
+  const dot = $('solveDot');
   if (!a) {
     state.wfc.result = null;
     solutionView.show(null, [], [], state.settings, resetView);
-    status.className = 'muted';
-    status.textContent = 'Load an FBX to run WFC on its sockets.';
-    $('wfcLegend').innerHTML = '';
+    status.className = 'pill';
+    status.textContent = '';
+    delete status.dataset.tip;
+    dot.className = 'dot';
     return;
   }
   const protos = exportJson(a).prototypes;
@@ -653,23 +756,21 @@ function solveAndRender(resetView: boolean) {
   solutionView.show(res, a.meshes, tileRaws().map((r) => r.index), state.settings, resetView);
 
   const time = `${state.wfc.ms.toFixed(0)} ms`;
-  if (res.ok) {
-    status.className = 'ok';
-    status.textContent = `Solved with ${variants.length} variants (${res.attempts} attempt${res.attempts > 1 ? 's' : ''}, ${time}).`;
-  } else {
-    status.className = 'error';
-    status.textContent =
-      `No solution after ${res.attempts} attempts (${time}). The red cell is where the last attempt ran out of tiles; ` +
-      'check the warnings and the boundary sockets.';
-  }
+  const attempts = `${res.attempts} attempt${res.attempts > 1 ? 's' : ''}`;
+  status.className = `pill ${res.ok ? 'ok' : 'error'}`;
+  dot.className = `dot ${res.ok ? 'ok' : 'error'}`;
+  status.innerHTML = res.ok
+    ? `${ICONS.check}Solved <span class="muted">${variants.length} variants · ${time}</span>`
+    : `${ICONS.alert}No solution <span class="muted">${attempts} · ${time}</span>`;
+  status.dataset.tip = res.ok
+    ? `Solved in ${attempts} with ${variants.length} tile variants (all rotations).`
+    : 'The red cell is where the last attempt ran out of tiles. Check the issues and the boundary sockets.';
   const placed = new Map<number, number>();
   for (const v of res.cells) if (v >= 0) placed.set(res.variants[v].proto, (placed.get(res.variants[v].proto) ?? 0) + 1);
-  $('wfcLegend').innerHTML = a.meshes
-    .map(
-      (m, i) =>
-        `<span><span class="swatch" style="background:#${protoColor(i).getHexString()}"></span>${esc(meshLabel(m))} <span class="count">${placed.get(i) ?? 0}</span></span>`,
-    )
-    .join('');
+  document.querySelectorAll<HTMLElement>('td.placed').forEach((td) => {
+    const n = placed.get(Number(td.dataset.mesh)) ?? 0;
+    td.textContent = n ? String(n) : '·';
+  });
 }
 
 function readWfcInputs(): boolean {
@@ -706,10 +807,7 @@ for (const id of ['wfcX', 'wfcY', 'wfcZ', 'wfcSeed', ...WFC_BOUNDARY_INPUTS.map(
   });
 }
 $('wfcCull').addEventListener('change', () => solutionView.setCullBackFaces($<HTMLInputElement>('wfcCull').checked));
-$('wfcNewSeed').addEventListener('click', () => {
-  $<HTMLInputElement>('wfcSeed').value = String(Math.floor(Math.random() * 1e6));
-  if (readWfcInputs()) solveAndRender(false);
-});
+$('wfcNewSeed').addEventListener('click', () => rerollSeed());
 
 // ---------------------------------------------------------------- events
 
@@ -722,14 +820,14 @@ function selectMesh(mesh: number) {
     r.classList.toggle('selected', hit);
     if (hit) row = r;
   });
-  const panel = $('meshes');
+  const panel = $('tileList');
   const r = row as HTMLElement | null;
   if (r) {
-    const top = r.offsetTop - panel.offsetTop;
-    const header = panel.querySelector('thead')?.offsetHeight ?? 0;
-    if (top - header < panel.scrollTop || top + r.offsetHeight > panel.scrollTop + panel.clientHeight) {
-      panel.scrollTop = top - header - (panel.clientHeight - header - r.offsetHeight) / 2;
-    }
+    const header = (panel.querySelector<HTMLElement>('.panel-head')?.offsetHeight ?? 0) + (panel.querySelector('thead')?.offsetHeight ?? 0);
+    const p = panel.getBoundingClientRect();
+    const rr = r.getBoundingClientRect();
+    const visTop = p.top + header;
+    if (rr.top < visTop || rr.bottom > p.bottom) panel.scrollTop += rr.top - visTop - (p.bottom - visTop - rr.height) / 2;
   }
   renderPreview(false);
 }
@@ -759,8 +857,7 @@ $('idTables').addEventListener('change', (e) => {
   const key = input.dataset.key!;
   const err = input.dataset.kind === 'h' ? renameH(key, input.value) : renameV(key, input.value);
   if (err) {
-    state.idError = err;
-    $('idError').textContent = err;
+    toast(err);
     input.value = input.dataset.kind === 'h' ? state.ids.h.get(key)! : state.ids.v.get(key)!;
   }
 });
@@ -769,19 +866,21 @@ $('idTables').addEventListener('keydown', (e) => {
   if ((e as KeyboardEvent).key === 'Enter') (e.target as HTMLElement).blur();
 });
 
-$('exportBtn').addEventListener('click', () => {
+function exportFile() {
   const a = state.analysis;
   if (!a) return;
-  const text = exportText(exportJson(a));
+  const text = exportText({ ...exportJson(a), boundary_sockets: boundarySockets(state.wfc, state.settings.vertical) });
   const url = URL.createObjectURL(new Blob([text + '\n'], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;
   link.download = (state.fileName.replace(/\.fbx$/i, '') || 'sockets') + '.json';
   link.click();
   URL.revokeObjectURL(url);
-});
+}
 
+$('exportBtn').addEventListener('click', exportFile);
 $('browseBtn').addEventListener('click', () => $('fbxInput').click());
+$('openBtn').addEventListener('click', () => $('fbxInput').click());
 $('importBtn').addEventListener('click', () => $('jsonInput').click());
 $<HTMLInputElement>('fbxInput').addEventListener('change', (e) => {
   const input = e.target as HTMLInputElement;
@@ -814,5 +913,141 @@ window.addEventListener('drop', (e) => {
   for (const file of e.dataTransfer?.files ?? []) handleFile(file);
 });
 
+// ---------------------------------------------------------------- shell
+
+type Tab = 'solve' | 'profiles';
+const TABS: Tab[] = ['solve', 'profiles'];
+
+function setTab(tab: Tab) {
+  document.querySelectorAll<HTMLElement>('.tab').forEach((el) => {
+    const on = el.dataset.tab === tab;
+    el.classList.toggle('active', on);
+    el.setAttribute('aria-selected', String(on));
+  });
+  document.querySelectorAll<HTMLElement>('.tab-pane').forEach((el) => el.classList.toggle('active', el.dataset.pane === tab));
+  prefs.set('tab', tab);
+}
+document.querySelectorAll<HTMLElement>('.tab').forEach((el) => el.addEventListener('click', () => setTab(el.dataset.tab as Tab)));
+
+function toggleIssues(open = $('issuesPanel').hidden) {
+  $('issuesPanel').hidden = !open;
+}
+$('issuesBtn').addEventListener('click', () => toggleIssues());
+$('issuesClose').addEventListener('click', () => toggleIssues(false));
+document.addEventListener('pointerdown', (e) => {
+  const t = e.target as Element;
+  if (!$('issuesPanel').hidden && !t.closest('#issuesPanel, #issuesBtn')) toggleIssues(false);
+});
+
+const helpDialog = $<HTMLDialogElement>('helpDialog');
+$('helpBtn').addEventListener('click', () => helpDialog.showModal());
+// Close on a click on the backdrop.
+helpDialog.addEventListener('click', (e) => {
+  if (e.target === helpDialog) helpDialog.close();
+});
+
+function rerollSeed() {
+  if (!state.analysis) return;
+  $<HTMLInputElement>('wfcSeed').value = String(Math.floor(Math.random() * 1e6));
+  if (readWfcInputs()) solveAndRender(false);
+}
+
+document.addEventListener('keydown', (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === 'o') {
+    e.preventDefault();
+    $('fbxInput').click();
+    return;
+  }
+  if (mod && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    exportFile();
+    return;
+  }
+  const typing = (e.target as Element).closest?.('input, select, textarea');
+  if (typing || mod || e.altKey || helpDialog.open) return;
+  if (e.key === '?' || e.key === 'F1') {
+    e.preventDefault();
+    helpDialog.showModal();
+  } else if (e.key === 'Escape') {
+    toggleIssues(false);
+  } else if (['1', '2'].includes(e.key)) {
+    setTab(TABS[Number(e.key) - 1]);
+  } else if (e.key.toLowerCase() === 'r') {
+    rerollSeed();
+  }
+});
+
+/** Drag handle that resizes the panel next to it, stored as a CSS variable. */
+function initSplitter(handle: HTMLElement) {
+  const panel = handle.dataset.panel!;
+  const name = `--${panel}-w`;
+  const root = document.documentElement;
+  const sign = panel === 'inspector' ? 1 : -1;
+  const saved = Number(prefs.get(name));
+  if (saved) root.style.setProperty(name, `${saved}px`);
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const start = $(panel).getBoundingClientRect().width;
+    let width = start;
+    handle.classList.add('dragging');
+    document.body.classList.add('resizing');
+    const move = (ev: PointerEvent) => {
+      width = Math.round(Math.min(Math.max(start + sign * (ev.clientX - startX), 200), innerWidth * 0.5));
+      root.style.setProperty(name, `${width}px`);
+    };
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+      prefs.set(name, String(width));
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up, { once: true });
+  });
+}
+
+/** Drag handle between the tiles list and the tile inspector, which it resizes. */
+function initTilePanelSplitter(handle: HTMLElement) {
+  const name = '--tile-panel-h';
+  const root = document.documentElement;
+  const saved = Number(prefs.get(name));
+  if (saved) root.style.setProperty(name, `${saved}px`);
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    const startY = e.clientY;
+    const start = $('tilePanel').getBoundingClientRect().height;
+    const max = $('outliner').getBoundingClientRect().height - 80;
+    let height = start;
+    handle.classList.add('dragging');
+    document.body.classList.add('resizing-v');
+    const move = (ev: PointerEvent) => {
+      height = Math.round(Math.min(Math.max(start - (ev.clientY - startY), 120), max));
+      root.style.setProperty(name, `${height}px`);
+    };
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('resizing-v');
+      prefs.set(name, String(height));
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up, { once: true });
+  });
+}
+
 buildSettings();
+document.querySelectorAll<HTMLElement>('.splitter').forEach(initSplitter);
+initTilePanelSplitter(document.querySelector<HTMLElement>('.hsplitter')!);
+// Remember which inspector sections are collapsed.
+document.querySelectorAll<HTMLDetailsElement>('details.sect').forEach((d) => {
+  if (prefs.get(`sect:${d.dataset.key}`) === 'closed') d.open = false;
+  d.addEventListener('toggle', () => prefs.set(`sect:${d.dataset.key}`, d.open ? 'open' : 'closed'));
+});
+injectIcons();
+installTooltips($('tooltip'));
+setTab(TABS.includes(prefs.get('tab') as Tab) ? (prefs.get('tab') as Tab) : 'solve');
 render(true);

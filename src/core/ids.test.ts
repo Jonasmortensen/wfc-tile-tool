@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   GROUND_SOCKET,
   analyze,
+  boundarySockets,
   buildExport,
   computeIds,
   exportText,
   findUnmatchedFaces,
   importProposals,
+  importedBoundary,
   meshLabel,
   meshSockets,
   parseImport,
@@ -164,6 +166,24 @@ describe('JSON import and export', () => {
     const json = buildExport(a, ids, [], false, [, , , ['LastResort']]);
     expect(json.prototypes[3].tags).toEqual(['LastResort']);
     expect(json.prototypes[0].tags).toBeUndefined();
+  });
+});
+
+describe('boundary sockets', () => {
+  const b = { outer: 'oo', outerGround: 'g1', bottom: 'g', top: '' };
+
+  it('exports after the prototypes, with inside only when top/bottom sockets are on', () => {
+    expect(boundarySockets(b, true)).toEqual({ outside: 'oo', inside: 'g1', bottom: 'g', top: '' });
+    expect(boundarySockets(b, false)).toEqual({ outside: 'oo', bottom: 'g', top: '' });
+    const text = exportText({ prototypes: [], boundary_sockets: boundarySockets(b, true) });
+    expect(text.indexOf('"prototypes"')).toBeLessThan(text.indexOf('"boundary_sockets"'));
+  });
+
+  it('round-trips through import, keeping only string keys', () => {
+    const json = JSON.stringify({ prototypes: [], boundary_sockets: { ...boundarySockets(b, true), top: 3 } });
+    const imported = parseImport(json);
+    expect(importedBoundary(imported.boundary_sockets!)).toEqual({ outer: 'oo', outerGround: 'g1', bottom: 'g' });
+    expect(parseImport('{"prototypes": []}').boundary_sockets).toBeUndefined();
   });
 });
 

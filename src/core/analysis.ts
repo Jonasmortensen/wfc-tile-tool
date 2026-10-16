@@ -333,6 +333,42 @@ export interface Prototype {
 
 export interface ExportJson {
   prototypes: Prototype[];
+  /** Partial when imported from a file that leaves some out. */
+  boundary_sockets?: Partial<BoundarySockets>;
+}
+
+/**
+ * Sockets required on the edge of the map, as the solve preview uses them.
+ * Sides equal `outside` (unreversed), or `inside` in layer 0 when present;
+ * `bottom` / `top` are required exactly under layer 0 / on top of the highest layer.
+ * An empty string means any socket.
+ */
+export interface BoundarySockets {
+  outside: string;
+  inside?: string;
+  bottom: string;
+  top: string;
+}
+
+const BOUNDARY_KEYS: Record<WfcBoundary, keyof BoundarySockets> = {
+  outer: 'outside',
+  outerGround: 'inside',
+  bottom: 'bottom',
+  top: 'top',
+};
+
+/** The export section for the boundary sockets; `inside` only applies with top/bottom sockets. */
+export function boundarySockets(b: Readonly<Record<WfcBoundary, string>>, vertical: boolean): BoundarySockets {
+  return { outside: b.outer, ...(vertical ? { inside: b.outerGround } : {}), bottom: b.bottom, top: b.top };
+}
+
+/** Boundary values from an imported section, by setting; keys the section lacks are left out. */
+export function importedBoundary(b: Partial<BoundarySockets>): Partial<Record<WfcBoundary, string>> {
+  const out: Partial<Record<WfcBoundary, string>> = {};
+  for (const [key, json] of Object.entries(BOUNDARY_KEYS) as [WfcBoundary, keyof BoundarySockets][]) {
+    if (typeof b[json] === 'string') out[key] = b[json];
+  }
+  return out;
 }
 
 /** `tags` per mesh index, e.g. carried over from an imported JSON. */
@@ -360,6 +396,7 @@ export function parseImport(text: string): ExportJson {
   const data = JSON.parse(text) as unknown;
   const protos = (data as { prototypes?: unknown })?.prototypes;
   if (!Array.isArray(protos)) throw new Error('JSON has no "prototypes" array.');
+  const boundary = (data as { boundary_sockets?: unknown }).boundary_sockets;
   return {
     prototypes: protos.map((p, i) => {
       const proto = p as Partial<Prototype>;
@@ -377,7 +414,15 @@ export function parseImport(text: string): ExportJson {
         ...(tags.length ? { tags } : {}),
       };
     }),
+    ...(boundary && typeof boundary === 'object' ? { boundary_sockets: parseBoundary(boundary as Record<string, unknown>) } : {}),
   };
+}
+
+/** The string-valued boundary keys; missing ones stay missing, so they keep following the defaults. */
+function parseBoundary(b: Record<string, unknown>): Partial<BoundarySockets> {
+  const out: Partial<BoundarySockets> = {};
+  for (const key of Object.values(BOUNDARY_KEYS)) if (typeof b[key] === 'string') out[key] = b[key] as string;
+  return out;
 }
 
 /**
