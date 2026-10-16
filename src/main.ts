@@ -870,8 +870,10 @@ const LOOKS: Look[] = ['debug', 'shaded'];
 /** Draw the solve in `look` and show it in the menu; remembered between sessions. */
 function setLook(look: Look) {
   solutionView.setLook(look);
-  $('giSetting').classList.toggle('disabled', look !== 'shaded');
-  $<HTMLInputElement>('giIntensity').disabled = look !== 'shaded';
+  document.querySelectorAll<HTMLElement>('#lookPanel .menu-setting').forEach((el) => {
+    el.classList.toggle('disabled', look !== 'shaded');
+    el.querySelector('input')!.disabled = look !== 'shaded';
+  });
   $('lookLabel').textContent = look === 'debug' ? 'Debug' : 'Shaded';
   document.querySelectorAll<HTMLElement>('.menu-item[data-look]').forEach((el) => {
     el.setAttribute('aria-checked', String(el.dataset.look === look));
@@ -891,18 +893,31 @@ $('lookPanel').addEventListener('click', (e) => {
 });
 setLook(LOOKS.includes(prefs.get('look') as Look) ? (prefs.get('look') as Look) : 'debug');
 
-/** Ground darkening strength for the shaded look, 0 to 1; remembered between sessions. */
-function setGroundDarkening(v: number) {
-  solutionView.setGroundDarkening(v);
-  $<HTMLInputElement>('giIntensity').value = String(v);
-  $('giValue').textContent = `${Math.round(v * 100)}%`;
-  prefs.set('groundDarkening', String(v));
+/** The shaded look's sliders, 0 to 1 each, shown as a percentage and remembered between sessions. */
+const lookSettings = { groundDarkening: 0.5, cavityRidge: 0.25, cavityValley: 0.25 };
+const LOOK_SLIDERS: [keyof typeof lookSettings, string, string][] = [
+  ['groundDarkening', 'giIntensity', 'giValue'],
+  ['cavityRidge', 'cavityRidge', 'cavityRidgeValue'],
+  ['cavityValley', 'cavityValley', 'cavityValleyValue'],
+];
+function applyLookSettings() {
+  solutionView.setGroundDarkening(lookSettings.groundDarkening);
+  solutionView.setCavity(lookSettings.cavityRidge, lookSettings.cavityValley);
+  for (const [key, input, label] of LOOK_SLIDERS) {
+    $<HTMLInputElement>(input).value = String(lookSettings[key]);
+    $(label).textContent = `${Math.round(lookSettings[key] * 100)}%`;
+  }
 }
-$('giIntensity').addEventListener('input', () => setGroundDarkening(Number($<HTMLInputElement>('giIntensity').value)));
-{
-  const saved = Number(prefs.get('groundDarkening') ?? NaN);
-  setGroundDarkening(saved >= 0 && saved <= 1 ? saved : 0.5);
+for (const [key, input] of LOOK_SLIDERS) {
+  const saved = Number(prefs.get(key) ?? NaN);
+  if (saved >= 0 && saved <= 1) lookSettings[key] = saved;
+  $(input).addEventListener('input', () => {
+    lookSettings[key] = Number($<HTMLInputElement>(input).value);
+    prefs.set(key, String(lookSettings[key]));
+    applyLookSettings();
+  });
 }
+applyLookSettings();
 
 function toggleTagFilter(open = $('tagFilterPanel').hidden) {
   $('tagFilterPanel').hidden = !open;
@@ -950,7 +965,7 @@ for (const [key, id] of WFC_BOUNDARY_INPUTS) {
 }
 for (const id of ['wfcX', 'wfcY', 'wfcZ', 'wfcSeed', ...WFC_BOUNDARY_INPUTS.map(([, id]) => id)]) {
   $(id).addEventListener('change', () => {
-    if (readWfcInputs()) solveAndRender(['wfcX', 'wfcY', 'wfcZ'].includes(id));
+    if (readWfcInputs()) solveAndRender(false);
   });
 }
 $('wfcCull').addEventListener('change', () => solutionView.setCullBackFaces($<HTMLInputElement>('wfcCull').checked));

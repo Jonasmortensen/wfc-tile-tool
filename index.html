@@ -86,10 +86,20 @@
                       <span class="menu-title">Shaded</span><span class="menu-desc">Soft light, shadows and ambient occlusion</span>
                     </button>
                     <div class="menu-sep"></div>
-                    <div class="menu-setting" id="giSetting" data-tip="Darken surfaces near the ground, over the height of the grid, for a cheap bounced-light feel. Shaded look only.">
+                    <div class="menu-setting" data-tip="Darken surfaces near the ground, over the height of the grid, for a cheap bounced-light feel. Shaded look only.">
                       <label for="giIntensity">Ground darkening</label>
                       <span id="giValue" class="menu-value"></span>
                       <input type="range" id="giIntensity" min="0" max="1" step="0.05">
+                    </div>
+                    <div class="menu-setting" data-tip="Brighten convex edges, like Blender's cavity ridge. Shaded look only.">
+                      <label for="cavityRidge">Cavity ridge</label>
+                      <span id="cavityRidgeValue" class="menu-value"></span>
+                      <input type="range" id="cavityRidge" min="0" max="1" step="0.05">
+                    </div>
+                    <div class="menu-setting" data-tip="Darken concave edges, like Blender's cavity valley. Shaded look only.">
+                      <label for="cavityValley">Cavity valley</label>
+                      <span id="cavityValleyValue" class="menu-value"></span>
+                      <input type="range" id="cavityValley" min="0" max="1" step="0.05">
                     </div>
                   </div>
                 </div>

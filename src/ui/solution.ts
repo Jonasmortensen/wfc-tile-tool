@@ -6,6 +6,7 @@ import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { mappingDeterminant, type Vec3 } from '../core/axis';
 import { meshLabel, type MeshAnalysis, type Settings } from '../core/analysis';
 import { cellBounds, rotateVec } from '../core/profile';
@@ -43,6 +44,60 @@ function addGroundDarkening(mat: THREE.MeshStandardMaterial, uniforms: Record<st
   };
   mat.customProgramCacheKey = () => 'ground-darkening';
 }
+
+/**
+ * Screen-space cavity, like Blender's viewport option: the change of the view
+ * normal across neighbouring pixels gives the curvature, positive on convex
+ * edges (brightened by `ridge`) and negative on concave ones (darkened by
+ * `valley`). Background pixels count as continuing the surface, so
+ * silhouettes are left alone.
+ */
+const CavityShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    tNormal: { value: null as THREE.Texture | null },
+    tDepth: { value: null as THREE.Texture | null },
+    texel: { value: new THREE.Vector2(1, 1) },
+    ridge: { value: 0.25 },
+    valley: { value: 0.25 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform sampler2D tNormal;
+    uniform sampler2D tDepth;
+    uniform vec2 texel;
+    uniform float ridge;
+    uniform float valley;
+    varying vec2 vUv;
+
+    vec3 normalAt(vec2 uv, vec3 fallback) {
+      if (texture2D(tDepth, uv).x >= 1.0) return fallback;
+      return normalize(texture2D(tNormal, uv).xyz * 2.0 - 1.0);
+    }
+
+    void main() {
+      vec4 color = texture2D(tDiffuse, vUv);
+      if (texture2D(tDepth, vUv).x >= 1.0) {
+        gl_FragColor = color;
+        return;
+      }
+      vec3 n = normalAt(vUv, vec3(0.0, 0.0, 1.0));
+      float curvature =
+        normalAt(vUv + vec2(texel.x, 0.0), n).x - normalAt(vUv - vec2(texel.x, 0.0), n).x +
+        normalAt(vUv + vec2(0.0, texel.y), n).y - normalAt(vUv - vec2(0.0, texel.y), n).y;
+      float shade = 1.0 + ridge * max(curvature, 0.0) - valley * max(-curvature, 0.0);
+      gl_FragColor = vec4(color.rgb * clamp(shade, 0.0, 2.0), color.a);
+    }`,
+};
+
+/** Width of the cavity lines, in CSS pixels. */
+const CAVITY_WIDTH = 1.5;
 
 /** Distinct, muted colour per prototype. */
 export function protoColor(i: number): THREE.Color {
@@ -85,6 +140,7 @@ export class SolutionView {
   private sun = new THREE.DirectionalLight(0xffffff, 1.8);
   private composer: EffectComposer;
   private gtao: GTAOPass;
+  private cavity: ShaderPass;
   private environment: THREE.Texture | null = null;
   private gi = { uGiGround: { value: 0 }, uGiHeight: { value: 1 }, uGiIntensity: { value: 0.5 } };
   /** The last show() call, to rebuild the scene when the look changes. */
@@ -109,8 +165,15 @@ export class SolutionView {
     // (the canvas's own MSAA does not reach the composer's render targets).
     this.composer = new EffectComposer(this.renderer);
     this.gtao = new GTAOPass(this.scene, this.camera);
+    // The pass's normal buffer: hard edges as modelled (the tiles are flat shaded), and both sides drawn.
+    this.gtao.normalMaterial.flatShading = true;
+    this.gtao.normalMaterial.side = THREE.DoubleSide;
+    this.cavity = new ShaderPass(CavityShader);
+    this.cavity.uniforms.tNormal.value = this.gtao.normalTexture;
+    this.cavity.uniforms.tDepth.value = this.gtao.depthTexture;
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.composer.addPass(this.gtao);
+    this.composer.addPass(this.cavity);
     this.composer.addPass(new OutputPass());
     this.composer.addPass(new SMAAPass());
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -140,6 +203,8 @@ export class SolutionView {
     if (!w || !h) return;
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
+    // A step of CAVITY_WIDTH CSS pixels, in texture coordinates (the same at any pixel ratio).
+    this.cavity.uniforms.texel.value.set(CAVITY_WIDTH / w, CAVITY_WIDTH / h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -185,6 +250,12 @@ export class SolutionView {
   /** How much the shaded look darkens tiles at ground level, 0 to 1. Applies live. */
   setGroundDarkening(intensity: number) {
     this.gi.uGiIntensity.value = intensity;
+  }
+
+  /** Cavity strengths for the shaded look, 0 to 1: brightening of convex edges, darkening of concave ones. Applies live. */
+  setCavity(ridge: number, valley: number) {
+    this.cavity.uniforms.ridge.value = ridge;
+    this.cavity.uniforms.valley.value = valley;
   }
 
   /** Renderer, lights and environment for the current look. */
@@ -344,6 +415,10 @@ export class SolutionView {
       this.camera.far = ext * 100;
       this.camera.updateProjectionMatrix();
       this.controls.update();
+    } else if (this.camera.far < ext * 100) {
+      // The view stays put, but a grown grid must not be clipped.
+      this.camera.far = ext * 100;
+      this.camera.updateProjectionMatrix();
     }
   }
 }
