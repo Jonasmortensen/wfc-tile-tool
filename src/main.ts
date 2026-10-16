@@ -23,6 +23,7 @@ import {
   meshSockets,
   parseImport,
   prototypeTags,
+  tagsFromName,
   EMPTY_NAME,
   meshLabel,
   originAtGround,
@@ -99,6 +100,8 @@ const state = {
   unitNote: '',
   /** Add the format's empty tiles (mesh_name "-1"), outside and inside air, to the prototypes. */
   emptyTile: true,
+  /** Enclosed space: inside/outside sampling, except for tiles with a tag in `off`. Tags start enabled. */
+  enclosed: { on: prefs.get('enclosed') !== 'off', off: new Set<string>(JSON.parse(prefs.get('enclosedOff') ?? '[]') as string[]) },
   wfc: {
     size: [10, 3, 10] as [number, number, number],
     seed: 1,
@@ -281,6 +284,8 @@ function recompute(resetView: boolean) {
   }
   const raws = tileRaws();
   raws.forEach((r, i) => (state.weights[i] ??= importedWeight(r.name) ?? 1));
+  state.settings.enclosedSpace = state.enclosed.on;
+  state.settings.openTags = [...state.enclosed.off];
   const a = analyze(raws, state.settings);
   const imp = state.imported ? importProposals(a, state.imported) : { h: new Map(), v: new Map(), origin: new Map() };
   // Priority: user renames > imported JSON > previous IDs (keeps IDs stable across setting changes) > automatic.
@@ -393,7 +398,13 @@ function buildSettings() {
         'Write posY / negY sockets.\n\nOff: Unity infers top and bottom from the sides (posX|negZ|negX|posZ), which assumes straight prisms.',
         toggle('vertical'),
       ) +
-        prop('Empty tiles', 'Add "-1" air tiles: outside air, inside air, and inside air on the ground.', toggle('emptyTile')),
+        prop('Empty tiles', 'Add "-1" air tiles: outside air, inside air, and inside air on the ground.', toggle('emptyTile')) +
+        prop(
+          'Enclosed space',
+          'Inside/outside sampling, so interiors only connect to interiors.\n\nTurn a tag off for tiles that enclose nothing (roads, ground): tiles with a tag that is off count as outside everywhere.',
+          toggle('enclosedSpace'),
+        ) +
+        `<div class="chip-row" id="enclosedTags"></div>`,
     );
   syncSettingsInputs();
 
@@ -420,6 +431,19 @@ function buildSettings() {
   for (const id of ['cellX', 'cellY', 'cellZ', 'epsilon', 'scale', 'pivot', 'ignoreTranslation', 'vertical', 'emptyTile']) {
     $(id).addEventListener('change', onChange);
   }
+  $('enclosedSpace').addEventListener('change', () => {
+    state.enclosed.on = $<HTMLInputElement>('enclosedSpace').checked;
+    prefs.set('enclosed', state.enclosed.on ? 'on' : 'off');
+    recompute(false);
+  });
+  $('enclosedTags').addEventListener('click', (e) => {
+    const tag = (e.target as Element).closest<HTMLElement>('.tag-chip')?.dataset.tag;
+    if (tag === undefined) return;
+    const off = state.enclosed.off;
+    if (!off.delete(tag)) off.add(tag);
+    prefs.set('enclosedOff', JSON.stringify([...off]));
+    recompute(false);
+  });
   $('axisPreset').addEventListener('change', () => {
     const id = $<HTMLSelectElement>('axisPreset').value as AxisPresetId;
     if (id !== 'manual') s.axis = cloneMapping(AXIS_PRESETS[id].mapping);
@@ -441,6 +465,7 @@ function syncSettingsInputs(preset: AxisPresetId = presetForMapping(state.settin
   $<HTMLInputElement>('ignoreTranslation').checked = s.ignoreTranslation;
   $<HTMLInputElement>('vertical').checked = s.vertical;
   $<HTMLInputElement>('emptyTile').checked = state.emptyTile;
+  $<HTMLInputElement>('enclosedSpace').checked = state.enclosed.on;
   $<HTMLSelectElement>('axisPreset').value = preset;
   $('axisRow').dataset.tip =
     preset === 'manual' ? 'Pick the file axis each Unity axis comes from.' : AXIS_PRESETS[preset].description;
@@ -464,8 +489,31 @@ function currentSockets() {
   return a.meshes.map((m) => meshSockets(a, state.ids, m.index, state.settings.vertical));
 }
 
+/** Every tag from the loaded tiles' names, sorted. */
+function fileTags(): string[] {
+  return [...new Set(state.raws.flatMap((r) => tagsFromName(r.name)))].sort((x, y) => x.localeCompare(y));
+}
+
+/** The Enclosed space tag chips, with how many tiles carry each tag. */
+function renderEnclosedTags() {
+  const el = $('enclosedTags');
+  el.hidden = !state.enclosed.on;
+  const counts = new Map<string, number>();
+  for (const r of state.raws) for (const t of tagsFromName(r.name)) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const tags = fileTags();
+  el.innerHTML = tags.length
+    ? tags
+        .map((t) => {
+          const on = !state.enclosed.off.has(t);
+          return `<button class="tag-chip${on ? '' : ' off'}" data-tag="${esc(t)}" aria-pressed="${on}" data-tip="${on ? 'Sampled' : 'Not sampled'}: ${counts.get(t)} tile${counts.get(t) === 1 ? '' : 's'}">${esc(t)}</button>`;
+        })
+        .join('')
+    : `<span class="muted">${state.raws.length ? 'No tags in this file.' : 'Load an FBX to pick tags.'}</span>`;
+}
+
 function render(resetView: boolean) {
   const a = state.analysis;
+  renderEnclosedTags();
   $('fileChip').innerHTML = state.fileName
     ? `${esc(state.fileName)} <span class="muted">${state.raws.length} mesh${state.raws.length === 1 ? '' : 'es'}</span>`
     : '';

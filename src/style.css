@@ -424,3 +424,8 @@ button.link:hover:not(:disabled) { background: none; text-decoration: underline;
 .tag-chip.off { background: transparent; border-color: var(--border-strong); color: var(--muted); text-decoration: line-through; }
 .tag-chip.off .n { color: var(--muted); }
 tr.mesh-row.filtered td { opacity: 0.4; }
+
+/* Enclosed space tags in the inspector: plain on/off, no strike-through. */
+.chip-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0 0 96px; }
+.chip-row .tag-chip { height: 22px; padding: 0 9px; font-size: 11.5px; }
+.chip-row .tag-chip.off { text-decoration: none; }

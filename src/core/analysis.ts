@@ -32,6 +32,10 @@ export interface Settings {
   ignoreTranslation: boolean;
   axis: AxisMapping;
   vertical: boolean;
+  /** Enclosed space: inside/outside sampling of the tiles' faces. Off: every tile counts as outside everywhere. */
+  enclosedSpace: boolean;
+  /** Tags (from tile names) turned off for Enclosed space: tiles with any of them are not sampled. */
+  openTags: readonly string[];
 }
 
 export function defaultSettings(): Settings {
@@ -43,7 +47,19 @@ export function defaultSettings(): Settings {
     ignoreTranslation: true,
     axis: cloneMapping(AXIS_PRESETS.blender.mapping),
     vertical: false,
+    enclosedSpace: true,
+    openTags: [],
   };
+}
+
+/** Whether a mesh gets inside/outside sampling under the Enclosed space setting. */
+export function samplesSpace(
+  raw: Pick<RawMesh, 'name' | 'emptySpace'>,
+  s: Pick<Settings, 'enclosedSpace' | 'openTags'>,
+): boolean {
+  // The generated empty tiles have no geometry: their label is their whole point.
+  if (raw.emptySpace !== undefined) return true;
+  return s.enclosedSpace && !tagsFromName(raw.name).some((t) => s.openTags.includes(t));
 }
 
 /** A mesh as loaded from the file: world-space positions in file axes. */
@@ -165,7 +181,8 @@ export function analyze(raws: readonly RawMesh[], s: Settings): Analysis {
     const flip = mappingDeterminant(s.axis) < 0;
     const facing = faceFacing(positions, raw.index, cell, eps, flip);
     const emptySpace = raw.emptySpace ?? 'o';
-    const space = faceSpace(positions, raw.index, cell, flip, emptySpace);
+    // Without sampling, every face is outside: like a tile with no surface in reach.
+    const space = samplesSpace(raw, s) ? faceSpace(positions, raw.index, cell, flip, emptySpace) : faceSpace([], null, cell, flip, 'o');
     const faces = extractFaces(vec3s(positions), cell, eps, facing, space);
     const edges = faceEdges(positions, raw.index, cell, eps);
     for (const face of ALL_FACES) faces[face].edges = edges[face];

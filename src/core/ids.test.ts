@@ -13,12 +13,13 @@ import {
   meshSockets,
   parseImport,
   sameOriginHeights,
+  samplesSpace,
   tagsFromName,
 } from './analysis';
 import { assignHorizontalIds, checkHId, checkVBase, isPalindrome, reverseString } from './ids';
-import { H_FACES, mirrorH } from './profile';
+import { ALL_FACES, H_FACES, mirrorH } from './profile';
 import { AXIS_PRESETS } from './axis';
-import { box, rawMesh, unitySettings } from './testUtils';
+import { box, quadMesh, rawMesh, unitySettings } from './testUtils';
 
 /** A varied set of tiles: symmetric walls, off-centre ledges, corners and empties. */
 function tileSet() {
@@ -177,6 +178,31 @@ describe('tagsFromName', () => {
     expect(tagsFromName('roof edge-Left')).toEqual(['roof', 'edge', 'Left']);
     expect(tagsFromName('WallWall')).toEqual(['Wall']);
     expect(tagsFromName('-1')).toEqual([]);
+  });
+});
+
+describe('enclosed space', () => {
+  const house = rawMesh('BuildingWall', box([-0.5, 0, -0.1], [0.5, 1, 0.1]));
+
+  it('samples every tile unless it has a tag that is off, or the setting is off', () => {
+    const s = unitySettings();
+    expect(samplesSpace(house, s)).toBe(true);
+    expect(samplesSpace(house, { ...s, openTags: ['Road'] })).toBe(true);
+    expect(samplesSpace(house, { ...s, openTags: ['Wall'] })).toBe(false);
+    expect(samplesSpace(house, { ...s, enclosedSpace: false })).toBe(false);
+    // The empty tiles keep their label either way.
+    expect(samplesSpace({ name: '-1', emptySpace: 'i' }, { ...s, enclosedSpace: false })).toBe(true);
+  });
+
+  it('leaves unsampled tiles outside on every face', () => {
+    // A ceiling facing down: the top face sees its back, so it is inside when sampled.
+    const ceiling = quadMesh('BuildingCeiling', [
+      { corners: [[-0.5, 0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]], front: [0, -1, 0] },
+    ]);
+    const sampled = analyze([ceiling], unitySettings()).meshes[0];
+    const open = analyze([ceiling], unitySettings({ openTags: ['Building'] })).meshes[0];
+    expect(sampled.faces.posY.profile.space).toBe('i'.repeat(16));
+    for (const face of ALL_FACES) expect(open.faces[face].profile.space).toBe('o'.repeat(16));
   });
 });
 
