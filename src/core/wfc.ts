@@ -1,6 +1,7 @@
 import type { Vec3 } from './axis';
-import { ALL_FACES, OPPOSITE, type Face } from './profile';
+import { ALL_FACES, H_FACES, OPPOSITE, type Face, type HFace } from './profile';
 import { faceSocket, rotateSockets, socketsFit, type Prototype, type Sockets } from './analysis';
+import { reverseString } from './ids';
 
 /** One prototype in one rotation, as the Unity loader generates it. */
 export interface Variant {
@@ -73,6 +74,48 @@ export function compatibility(variants: readonly Variant[]): Record<Face, number
   return out;
 }
 
+/** Mirror axis of a solve: 'x' flips X (cell x <-> X-1-x), 'z' flips Z. */
+export type MirrorAxis = 'x' | 'z';
+
+/** Side sockets of a mirrored tile: the two faces across the axis swap, and every side profile reverses. */
+export function mirrorSides(s: Readonly<Sockets>, axis: MirrorAxis): Record<HFace, string | undefined> {
+  const swap: Partial<Record<HFace, HFace>> = axis === 'x' ? { posX: 'negX', negX: 'posX' } : { posZ: 'negZ', negZ: 'posZ' };
+  const out = {} as Record<HFace, string | undefined>;
+  for (const f of H_FACES) {
+    const id = s[swap[f] ?? f];
+    out[f] = id === undefined ? undefined : reverseString(id);
+  }
+  return out;
+}
+
+/** A mesh name without a trailing "Mirror" ("_Mirror", "-mirror", ...), or null when it has none. */
+function unmirroredName(name: string): string | null {
+  const m = /^(.+?)[_\s-]?mirror$/i.exec(name);
+  return m ? m[1] : null;
+}
+
+/**
+ * For every variant, the variants that may sit in its mirror cell: those of
+ * the same prototype whose sides are its mirrored sides (a rotation mirrors
+ * it), or else those of its named counterpart ("Wall" <-> "WallMirror") with
+ * those sides. Top and bottom are left to propagation. A variant with none
+ * cannot be used in a mirrored solve. The relation is symmetric.
+ */
+export function mirrorPartners(variants: readonly Variant[], names: readonly string[], axis: MirrorAxis): number[][] {
+  const sideKey = (s: Readonly<Partial<Record<HFace, string>>>) => JSON.stringify(H_FACES.map((f) => s[f] ?? null));
+  const keys = variants.map((v) => sideKey(v.sockets));
+  const counterpart = (p: number, q: number) =>
+    p !== q && (unmirroredName(names[q]) === names[p] || unmirroredName(names[p]) === names[q]);
+  const out = variants.map((v) => {
+    const want = sideKey(mirrorSides(v.sockets, axis));
+    const matches = (pred: (w: Variant) => boolean) => variants.flatMap((w, j) => (pred(w) && keys[j] === want ? [j] : []));
+    const own = matches((w) => w.proto === v.proto);
+    return own.length ? own : matches((w) => counterpart(v.proto, w.proto));
+  });
+  out.forEach((list, i) => list.forEach((j) => out[j].includes(i) || out[j].push(i)));
+  return out;
+}
+
 /** Small seeded PRNG (mulberry32), so a seed always gives the same result. */
 export function rng(seed: number): () => number {
   let a = seed >>> 0;
@@ -98,6 +141,8 @@ export interface WfcOptions {
   top?: string;
   /** Restarts allowed after a contradiction. */
   maxAttempts?: number;
+  /** Mirror the solve across each of these axes (both: four-way symmetry); `partners` from mirrorPartners. */
+  mirrors?: readonly { axis: MirrorAxis; partners: readonly (readonly number[])[] }[];
 }
 
 export interface WfcResult {
@@ -152,6 +197,20 @@ export function solveWfc(variants: Variant[], opts: WfcOptions): WfcResult {
         : opts.outerGround !== undefined && cellCoords(size, c)[1] === 0
           ? opts.outerGround
           : opts.outer) || '';
+  // Per mirror: the mirror cell of each cell (itself on the mirror plane), and the variants allowed opposite each variant.
+  const mirrors = (opts.mirrors ?? []).map(({ axis, partners }) => ({
+    partners,
+    cell: Int32Array.from({ length: n }, (_, i) => {
+      const [x, y, z] = cellCoords(size, i);
+      return axis === 'x' ? cellIndex(size, size[0] - 1 - x, y, z) : cellIndex(size, x, y, size[2] - 1 - z);
+    }),
+  }));
+  /** The cells a cell maps to under any combination of the mirrors, itself first. */
+  const orbit = (c: number) => {
+    const out = [c];
+    for (let i = 0; i < out.length; i++) for (const m of mirrors) if (!out.includes(m.cell[out[i]])) out.push(m.cell[out[i]]);
+    return out;
+  };
   const xlogx = (w: number) => (w > 0 ? w * Math.log(w) : 0);
 
   let attempts = 0;
@@ -197,7 +256,43 @@ export function solveWfc(variants: Variant[], opts: WfcOptions): WfcResult {
             stack.push(nb);
           }
         });
+        // Each mirror cell keeps only variants with a partner still possible here.
+        for (const { cell, partners } of mirrors) {
+          const m = cell[c];
+          if (m === c || contradiction !== null) continue;
+          let changed = false;
+          for (let w = 0; w < nv; w++) {
+            if (domain[m * nv + w] && !partners[w].some((v) => domain[c * nv + v])) {
+              ban(m, w);
+              changed = true;
+            }
+          }
+          if (changed && !queued[m]) {
+            queued[m] = 1;
+            stack.push(m);
+          }
+        }
       }
+    };
+
+    /** Collapse cell c to one of its options: LastResort only when nothing else is left, weight 0 only when all are 0. */
+    const collapse = (c: number) => {
+      let options: number[] = [];
+      for (let v = 0; v < nv; v++) if (domain[c * nv + v]) options.push(v);
+      const preferred = options.filter((v) => !variants[v].lastResort);
+      if (preferred.length) options = preferred;
+      const total = options.reduce((s, v) => s + variants[v].weight, 0);
+      let pick = options[Math.floor(random() * options.length)];
+      if (total > 0) {
+        let r = random() * total;
+        for (const v of options) {
+          if (variants[v].weight <= 0) continue;
+          pick = v;
+          r -= variants[v].weight;
+          if (r <= 0) break;
+        }
+      }
+      for (let v = 0; v < nv; v++) if (v !== pick && domain[c * nv + v]) ban(c, v);
     };
 
     // Boundary sockets on the grid edges.
@@ -209,6 +304,13 @@ export function solveWfc(variants: Variant[], opts: WfcOptions): WfcResult {
         for (let v = 0; v < nv; v++) if (domain[c * nv + v] && variants[v].sockets[f] !== want) ban(c, v);
       }
     });
+    // On the mirror plane a cell is its own mirror: only variants that mirror onto themselves.
+    for (const { cell, partners } of mirrors) {
+      for (let c = 0; c < n && contradiction === null; c++) {
+        if (cell[c] !== c) continue;
+        for (let v = 0; v < nv; v++) if (domain[c * nv + v] && !partners[v].includes(v)) ban(c, v);
+      }
+    }
     // Drop variants that have no possible neighbour on some side before the first choice.
     if (contradiction === null) propagate(Array.from({ length: n }, (_, c) => c));
     while (contradiction === null) {
@@ -224,24 +326,15 @@ export function solveWfc(variants: Variant[], opts: WfcOptions): WfcResult {
         }
       }
       if (best < 0) break;
-      // LastResort only when nothing else is left; weight 0 only when every candidate has weight 0.
-      let options: number[] = [];
-      for (let v = 0; v < nv; v++) if (domain[best * nv + v]) options.push(v);
-      const preferred = options.filter((v) => !variants[v].lastResort);
-      if (preferred.length) options = preferred;
-      const total = options.reduce((s, v) => s + variants[v].weight, 0);
-      let pick = options[Math.floor(random() * options.length)];
-      if (total > 0) {
-        let r = random() * total;
-        for (const v of options) {
-          if (variants[v].weight <= 0) continue;
-          pick = v;
-          r -= variants[v].weight;
-          if (r <= 0) break;
-        }
-      }
-      for (let v = 0; v < nv; v++) if (v !== pick && domain[best * nv + v]) ban(best, v);
+      collapse(best);
       propagate([best]);
+      // The mirror cells are collapsed with it, each to one of the partners propagation left there.
+      for (const m of orbit(best)) {
+        if (contradiction !== null) break;
+        if (count[m] <= 1) continue;
+        collapse(m);
+        propagate([m]);
+      }
     }
 
     const cells = new Int32Array(n).fill(-1);

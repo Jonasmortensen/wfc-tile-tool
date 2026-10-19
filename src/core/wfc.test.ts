@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { socketsFit, type Sockets } from './analysis';
 import { ALL_FACES, OPPOSITE } from './profile';
-import { FACE_OFFSETS, buildVariants, cellCoords, cellIndex, solveWfc, tagFilter, type WfcResult } from './wfc';
+import {
+  FACE_OFFSETS,
+  buildVariants,
+  cellCoords,
+  cellIndex,
+  mirrorPartners,
+  mirrorSides,
+  solveWfc,
+  tagFilter,
+  type MirrorAxis,
+  type WfcResult,
+} from './wfc';
 
 /** Every pair of placed neighbours must fit. */
 function checkSolution(res: WfcResult) {
@@ -139,6 +150,90 @@ describe('solveWfc', () => {
     for (let i = 0; i < res.cells.length; i++) {
       expect(variants[res.cells[i]].sockets.negX).toBe(cellCoords(res.size, i)[1] === 0 ? 'b' : 'o');
     }
+  });
+});
+
+describe('mirror', () => {
+  /** A pinwheel: no rotation of it is its mirror image. */
+  const PIN = all('ab');
+
+  it('mirrors sides across the axis and reverses them', () => {
+    expect(mirrorSides(WALL, 'x')).toEqual({ posX: 'o', negZ: 'oi', negX: 'i', posZ: 'io' });
+    expect(mirrorSides(WALL, 'z')).toEqual({ posX: 'i', negZ: 'io', negX: 'o', posZ: 'oi' });
+  });
+
+  it('pairs a variant with the rotation that mirrors it, else with its Mirror tile', () => {
+    const variants = buildVariants([{ sockets: WALL, weight: 1 }, { sockets: PIN, weight: 1 }, { sockets: all('ba'), weight: 1 }]);
+    const names = ['Wall', 'Pin', 'Pin_Mirror'];
+    const partners = mirrorPartners(variants, names, 'x');
+    const at = (proto: number, rotation: number) => variants.findIndex((v) => v.proto === proto && v.rotation === rotation);
+    // A wall turned half way round is its own mirror across X; across Z it is unchanged.
+    expect(partners[at(0, 0)]).toEqual([at(0, 2)]);
+    expect(mirrorPartners(variants, names, 'z')[at(0, 0)]).toEqual([at(0, 0)]);
+    expect(partners[at(1, 0)]).toEqual([at(2, 0)]);
+    expect(partners[at(2, 0)]).toEqual([at(1, 0)]);
+    // Without a Mirror tile a pinwheel has no partner.
+    expect(mirrorPartners(variants, ['Wall', 'Pin', 'Other'], 'x')[at(1, 0)]).toEqual([]);
+  });
+
+  it('solves symmetrically across the axis', () => {
+    const protos = [
+      { sockets: all('a'), weight: 1 },
+      { sockets: { posX: 'p', negZ: 'a', negX: 'p', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'p', negZ: 'p', negX: 'a', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'ab', negZ: 'a', negX: 'ba', posZ: 'a' }, weight: 1 },
+    ];
+    const variants = buildVariants(protos);
+    for (const axis of ['x', 'z'] as MirrorAxis[]) {
+      const partners = mirrorPartners(variants, ['A', 'B', 'C', 'D'], axis);
+      for (const [seed, size] of [[1, [8, 2, 8]], [2, [7, 1, 7]]] as [number, [number, number, number]][]) {
+        const res = solveWfc(variants, { size, seed, mirrors: [{ axis, partners }] });
+        expect(res.ok).toBe(true);
+        checkSolution(res);
+        for (let i = 0; i < res.cells.length; i++) {
+          const [x, y, z] = cellCoords(size, i);
+          const m = axis === 'x' ? cellIndex(size, size[0] - 1 - x, y, z) : cellIndex(size, x, y, size[2] - 1 - z);
+          expect(partners[res.cells[i]]).toContain(res.cells[m]);
+        }
+      }
+    }
+  });
+
+  it('mirrors across X and Z together', () => {
+    const protos = [
+      { sockets: all('a'), weight: 1 },
+      { sockets: { posX: 'p', negZ: 'a', negX: 'p', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'p', negZ: 'p', negX: 'a', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'ab', negZ: 'a', negX: 'ba', posZ: 'a' }, weight: 1 },
+    ];
+    const variants = buildVariants(protos);
+    const names = ['A', 'B', 'C', 'D'];
+    const px = mirrorPartners(variants, names, 'x');
+    const pz = mirrorPartners(variants, names, 'z');
+    for (const [seed, size] of [[1, [8, 2, 8]], [2, [7, 1, 9]]] as [number, [number, number, number]][]) {
+      const res = solveWfc(variants, { size, seed, mirrors: [{ axis: 'x', partners: px }, { axis: 'z', partners: pz }] });
+      expect(res.ok).toBe(true);
+      checkSolution(res);
+      for (let i = 0; i < res.cells.length; i++) {
+        const [x, y, z] = cellCoords(size, i);
+        expect(px[res.cells[i]]).toContain(res.cells[cellIndex(size, size[0] - 1 - x, y, z)]);
+        expect(pz[res.cells[i]]).toContain(res.cells[cellIndex(size, x, y, size[2] - 1 - z)]);
+      }
+    }
+  });
+
+  it('places Mirror tiles opposite their tiles, and fails where a cell must mirror itself', () => {
+    const variants = buildVariants([{ sockets: PIN, weight: 1 }, { sockets: all('ba'), weight: 1 }]);
+    const partners = mirrorPartners(variants, ['Pin', 'PinMirror'], 'x');
+    const res = solveWfc(variants, { size: [6, 1, 4], seed: 1, mirrors: [{ axis: 'x', partners }] });
+    expect(res.ok).toBe(true);
+    for (let z = 0; z < 4; z++) {
+      for (let x = 0; x < 3; x++) {
+        const a = res.variants[res.cells[cellIndex(res.size, x, 0, z)]].proto;
+        expect(res.variants[res.cells[cellIndex(res.size, 5 - x, 0, z)]].proto).toBe(1 - a);
+      }
+    }
+    expect(solveWfc(variants, { size: [5, 1, 4], seed: 1, maxAttempts: 2, mirrors: [{ axis: 'x', partners }] }).ok).toBe(false);
   });
 });
 

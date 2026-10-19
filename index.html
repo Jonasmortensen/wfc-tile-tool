@@ -40,6 +40,15 @@
               <label for="wfcSeed">Seed</label>
               <input type="number" id="wfcSeed" min="0" step="1" value="1">
             </div>
+            <div class="prop" data-tip="Mirror the solve across X, Z or both (four-way): each collapsed tile places its mirror image in each mirrored cell, as a rotation of itself or else as its Mirror tile (e.g. Wall and WallMirror). Tiles with neither are left out.">
+              <label for="wfcMirror">Mirror</label>
+              <select id="wfcMirror">
+                <option value="">Off</option>
+                <option value="x">X</option>
+                <option value="z">Z</option>
+                <option value="xz">X and Z</option>
+              </select>
+            </div>
             <div class="sub">Boundary</div>
             <div class="prop" data-tip="Every side facing out of the map must equal this socket (unreversed); above layer 0 when Sides at ground level is shown. Empty: any.">
               <label for="wfcOuter">Sides</label>
