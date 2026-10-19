@@ -40,13 +40,25 @@
               <label for="wfcSeed">Seed</label>
               <input type="number" id="wfcSeed" min="0" step="1" value="1">
             </div>
-            <div class="prop" data-tip="Mirror the solve across X, Z or both (four-way): each collapsed tile places its mirror image in each mirrored cell, as a rotation of itself or else as its Mirror tile (e.g. Wall and WallMirror). Tiles with neither are left out.">
-              <label for="wfcMirror">Mirror</label>
-              <select id="wfcMirror">
+            <div class="prop" data-tip="Make the solve symmetric. Mirror: each collapsed tile places its mirror image in each mirrored cell, as a rotation of itself or else as its Mirror tile (e.g. Wall and WallMirror); tiles with neither are left out. Rotate: each quadrant (90°) or half (180°) is the previous one turned about the centre. Snowflake: mirrored across X, Z and both diagonals, so one eighth repeats 8 times around the centre. Diagonals, 90° and Snowflake need a square grid.">
+              <label for="wfcSymmetry">Symmetry</label>
+              <select id="wfcSymmetry">
                 <option value="">Off</option>
-                <option value="x">X</option>
-                <option value="z">Z</option>
-                <option value="xz">X and Z</option>
+                <optgroup label="Mirror">
+                  <option value="x">X</option>
+                  <option value="z">Z</option>
+                  <option value="x,z">X and Z</option>
+                  <option value="diag">Diagonal (X = Z)</option>
+                  <option value="anti">Anti-diagonal</option>
+                  <option value="diag,anti">Both diagonals</option>
+                </optgroup>
+                <optgroup label="Rotate">
+                  <option value="rot90">90° (4 quadrants)</option>
+                  <option value="rot180">180° (2 halves)</option>
+                </optgroup>
+                <optgroup label="Mirror and rotate">
+                  <option value="x,z,diag,anti">Snowflake (8 ways)</option>
+                </optgroup>
               </select>
             </div>
             <div class="sub">Boundary</div>

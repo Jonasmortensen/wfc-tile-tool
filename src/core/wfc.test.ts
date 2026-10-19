@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { socketsFit, type Sockets } from './analysis';
+import { rotateSockets, socketsFit, type Sockets } from './analysis';
 import { ALL_FACES, OPPOSITE } from './profile';
 import {
   FACE_OFFSETS,
@@ -9,7 +9,9 @@ import {
   mirrorPartners,
   mirrorSides,
   solveWfc,
+  symmetryConstraints,
   tagFilter,
+  transformCell,
   type MirrorAxis,
   type WfcResult,
 } from './wfc';
@@ -187,7 +189,7 @@ describe('mirror', () => {
     for (const axis of ['x', 'z'] as MirrorAxis[]) {
       const partners = mirrorPartners(variants, ['A', 'B', 'C', 'D'], axis);
       for (const [seed, size] of [[1, [8, 2, 8]], [2, [7, 1, 7]]] as [number, [number, number, number]][]) {
-        const res = solveWfc(variants, { size, seed, mirrors: [{ axis, partners }] });
+        const res = solveWfc(variants, { size, seed, symmetry: [{ transform: axis, partners }] });
         expect(res.ok).toBe(true);
         checkSolution(res);
         for (let i = 0; i < res.cells.length; i++) {
@@ -211,7 +213,7 @@ describe('mirror', () => {
     const px = mirrorPartners(variants, names, 'x');
     const pz = mirrorPartners(variants, names, 'z');
     for (const [seed, size] of [[1, [8, 2, 8]], [2, [7, 1, 9]]] as [number, [number, number, number]][]) {
-      const res = solveWfc(variants, { size, seed, mirrors: [{ axis: 'x', partners: px }, { axis: 'z', partners: pz }] });
+      const res = solveWfc(variants, { size, seed, symmetry: [{ transform: 'x', partners: px }, { transform: 'z', partners: pz }] });
       expect(res.ok).toBe(true);
       checkSolution(res);
       for (let i = 0; i < res.cells.length; i++) {
@@ -222,10 +224,87 @@ describe('mirror', () => {
     }
   });
 
+  it('mirrors across the diagonals', () => {
+    // Across X = Z, posX lands on posZ; across the other diagonal it lands on negZ.
+    expect(mirrorSides(WALL, 'diag')).toEqual({ posX: 'io', negZ: 'o', negX: 'oi', posZ: 'i' });
+    expect(mirrorSides(WALL, 'anti')).toEqual({ posX: 'oi', negZ: 'i', negX: 'io', posZ: 'o' });
+    const protos = [
+      { sockets: all('a'), weight: 1 },
+      { sockets: { posX: 'p', negZ: 'a', negX: 'p', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'p', negZ: 'p', negX: 'a', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'ab', negZ: 'a', negX: 'ba', posZ: 'a' }, weight: 1 },
+    ];
+    const variants = buildVariants(protos);
+    const names = ['A', 'B', 'C', 'D'];
+    const pd = mirrorPartners(variants, names, 'diag');
+    const pa = mirrorPartners(variants, names, 'anti');
+    const size: [number, number, number] = [7, 2, 7];
+    const res = solveWfc(variants, { size, seed: 1, symmetry: [{ transform: 'diag', partners: pd }, { transform: 'anti', partners: pa }] });
+    expect(res.ok).toBe(true);
+    checkSolution(res);
+    for (let i = 0; i < res.cells.length; i++) {
+      const [x, y, z] = cellCoords(size, i);
+      expect(pd[res.cells[i]]).toContain(res.cells[cellIndex(size, z, y, x)]);
+      expect(pa[res.cells[i]]).toContain(res.cells[cellIndex(size, 6 - z, y, 6 - x)]);
+    }
+    expect(() => solveWfc(variants, { size: [4, 1, 5], seed: 1, symmetry: [{ transform: 'diag', partners: pd }] })).toThrow();
+  });
+
+  it('turns each quadrant onto the next', () => {
+    const protos = [
+      { sockets: all('a'), weight: 1 },
+      { sockets: { posX: 'p', negZ: 'a', negX: 'p', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'p', negZ: 'p', negX: 'a', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'ab', negZ: 'a', negX: 'ba', posZ: 'a' }, weight: 1 },
+    ];
+    const variants = buildVariants(protos);
+    const symmetry = symmetryConstraints(variants, [], 'rot90');
+    for (const [seed, size] of [[1, [8, 2, 8]], [2, [7, 1, 7]]] as [number, [number, number, number]][]) {
+      const res = solveWfc(variants, { size, seed, symmetry });
+      expect(res.ok).toBe(true);
+      checkSolution(res);
+      for (let i = 0; i < res.cells.length; i++) {
+        const turned = variants[res.cells[cellIndex(size, ...transformCell(size, 'rot90', cellCoords(size, i)))]];
+        expect(turned.sockets).toEqual(rotateSockets(variants[res.cells[i]].sockets, 1));
+      }
+    }
+    // Half turns need no square grid.
+    const size: [number, number, number] = [6, 1, 9];
+    const res = solveWfc(variants, { size, seed: 3, symmetry: symmetryConstraints(variants, [], 'rot180') });
+    expect(res.ok).toBe(true);
+    for (let i = 0; i < res.cells.length; i++) {
+      const turned = variants[res.cells[cellIndex(size, ...transformCell(size, 'rot180', cellCoords(size, i)))]];
+      expect(turned.sockets).toEqual(rotateSockets(variants[res.cells[i]].sockets, 2));
+    }
+  });
+
+  it('repeats one eighth around the centre like a snowflake', () => {
+    const protos = [
+      { sockets: all('a'), weight: 1 },
+      { sockets: { posX: 'p', negZ: 'a', negX: 'p', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'p', negZ: 'p', negX: 'a', posZ: 'a' }, weight: 1 },
+      { sockets: { posX: 'ab', negZ: 'a', negX: 'ba', posZ: 'a' }, weight: 1 },
+    ];
+    const variants = buildVariants(protos);
+    const names = ['A', 'B', 'C', 'D'];
+    const axes: MirrorAxis[] = ['x', 'z', 'diag', 'anti'];
+    const symmetry = axes.flatMap((s) => symmetryConstraints(variants, names, s));
+    for (const [seed, size] of [[1, [8, 2, 8]], [2, [9, 1, 9]]] as [number, [number, number, number]][]) {
+      const res = solveWfc(variants, { size, seed, symmetry });
+      expect(res.ok).toBe(true);
+      checkSolution(res);
+      // The mirrors together give the quarter turns too.
+      for (let i = 0; i < res.cells.length; i++) {
+        const turned = variants[res.cells[cellIndex(size, ...transformCell(size, 'rot90', cellCoords(size, i)))]];
+        expect(turned.sockets).toEqual(rotateSockets(variants[res.cells[i]].sockets, 1));
+      }
+    }
+  });
+
   it('places Mirror tiles opposite their tiles, and fails where a cell must mirror itself', () => {
     const variants = buildVariants([{ sockets: PIN, weight: 1 }, { sockets: all('ba'), weight: 1 }]);
     const partners = mirrorPartners(variants, ['Pin', 'PinMirror'], 'x');
-    const res = solveWfc(variants, { size: [6, 1, 4], seed: 1, mirrors: [{ axis: 'x', partners }] });
+    const res = solveWfc(variants, { size: [6, 1, 4], seed: 1, symmetry: [{ transform: 'x', partners }] });
     expect(res.ok).toBe(true);
     for (let z = 0; z < 4; z++) {
       for (let x = 0; x < 3; x++) {
@@ -233,7 +312,7 @@ describe('mirror', () => {
         expect(res.variants[res.cells[cellIndex(res.size, 5 - x, 0, z)]].proto).toBe(1 - a);
       }
     }
-    expect(solveWfc(variants, { size: [5, 1, 4], seed: 1, maxAttempts: 2, mirrors: [{ axis: 'x', partners }] }).ok).toBe(false);
+    expect(solveWfc(variants, { size: [5, 1, 4], seed: 1, maxAttempts: 2, symmetry: [{ transform: 'x', partners }] }).ok).toBe(false);
   });
 });
 

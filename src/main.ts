@@ -45,7 +45,7 @@ import { ALL_FACES, H_FACES, OPPOSITE, rotatePoint, type Face } from './core/pro
 import { plotH, plotV } from './ui/plots';
 import { BACK_FACE_COLOR, FACE_COLORS, Preview } from './ui/preview';
 import { SolutionView, protoColor, type Look } from './ui/solution';
-import { buildVariants, mirrorPartners, solveWfc, tagFilter, type MirrorAxis, type WfcResult } from './core/wfc';
+import { buildVariants, needsSquare, solveWfc, symmetryConstraints, tagFilter, type Symmetry, type WfcResult } from './core/wfc';
 import { ICONS, injectIcons } from './ui/icons';
 import { installTooltips } from './ui/tooltip';
 
@@ -105,8 +105,8 @@ const state = {
   wfc: {
     size: [10, 3, 10] as [number, number, number],
     seed: 1,
-    /** Mirror the solve across these axes; empty: off. */
-    mirror: [] as MirrorAxis[],
+    /** Symmetries of the solve (mirrors and turns); empty: off. */
+    symmetry: [] as Symmetry[],
     /** Boundary sockets; empty means unconstrained. */
     outer: '',
     /** Sides of layer 0, used instead of `outer` there when top/bottom sockets are on. */
@@ -813,21 +813,26 @@ function solveAndRender(resetView: boolean) {
   const variants = buildVariants(protos).filter((v) => kept[v.proto]);
   fillSocketLists(variants);
   applyWfcDefaults(a, protos);
-  if (!variants.length) {
+  const { size, seed, outer, outerGround, bottom, top } = state.wfc;
+  const unsolvable = !variants.length
+    ? { label: 'No tiles left', tip: 'Every tile carries a tag that is turned off.' }
+    : state.wfc.symmetry.some(needsSquare) && size[0] !== size[2]
+      ? { label: 'Grid not square', tip: 'Diagonal mirrors and quarter turns swap X and Z, so the grid needs X = Z.' }
+      : null;
+  if (unsolvable) {
     state.wfc.result = null;
     solutionView.show(null, [], [], state.settings, resetView);
     status.className = 'pill error';
     dot.className = 'dot error';
-    status.innerHTML = `${ICONS.alert}No tiles left`;
-    status.dataset.tip = 'Every tile carries a tag that is turned off.';
+    status.innerHTML = `${ICONS.alert}${unsolvable.label}`;
+    status.dataset.tip = unsolvable.tip;
     document.querySelectorAll<HTMLElement>('td.placed').forEach((td) => (td.textContent = '·'));
     return;
   }
-  const { size, seed, outer, outerGround, bottom, top } = state.wfc;
   const start = performance.now();
   const names = protos.map((p) => p.mesh_name);
-  const mirrors = state.wfc.mirror.map((axis) => ({ axis, partners: mirrorPartners(variants, names, axis) }));
-  const res = solveWfc(variants, { size, seed, outer, outerGround: split ? outerGround : undefined, bottom, top, mirrors });
+  const symmetry = state.wfc.symmetry.flatMap((s) => symmetryConstraints(variants, names, s));
+  const res = solveWfc(variants, { size, seed, outer, outerGround: split ? outerGround : undefined, bottom, top, symmetry });
   state.wfc.ms = performance.now() - start;
   state.wfc.result = res;
   solutionView.show(res, a.meshes, tileRaws().map((r) => r.index), state.settings, resetView);
@@ -957,7 +962,8 @@ function readWfcInputs(): boolean {
   if (x === null || y === null || z === null || !seedOk) return false;
   state.wfc.size = [x, y, z];
   state.wfc.seed = seed;
-  state.wfc.mirror = [...$<HTMLSelectElement>('wfcMirror').value] as MirrorAxis[];
+  const symmetry = $<HTMLSelectElement>('wfcSymmetry').value;
+  state.wfc.symmetry = (symmetry ? symmetry.split(',') : []) as Symmetry[];
   state.wfc.outer = $<HTMLInputElement>('wfcOuter').value.trim();
   state.wfc.outerGround = $<HTMLInputElement>('wfcOuterGround').value.trim();
   state.wfc.bottom = $<HTMLInputElement>('wfcBottom').value.trim();
@@ -968,7 +974,7 @@ function readWfcInputs(): boolean {
 for (const [key, id] of WFC_BOUNDARY_INPUTS) {
   $(id).addEventListener('change', () => state.wfc.edited.add(key));
 }
-for (const id of ['wfcX', 'wfcY', 'wfcZ', 'wfcSeed', 'wfcMirror', ...WFC_BOUNDARY_INPUTS.map(([, id]) => id)]) {
+for (const id of ['wfcX', 'wfcY', 'wfcZ', 'wfcSeed', 'wfcSymmetry', ...WFC_BOUNDARY_INPUTS.map(([, id]) => id)]) {
   $(id).addEventListener('change', () => {
     if (readWfcInputs()) solveAndRender(false);
   });

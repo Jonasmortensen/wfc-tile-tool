@@ -74,12 +74,71 @@ export function compatibility(variants: readonly Variant[]): Record<Face, number
   return out;
 }
 
-/** Mirror axis of a solve: 'x' flips X (cell x <-> X-1-x), 'z' flips Z. */
-export type MirrorAxis = 'x' | 'z';
+/**
+ * Mirror axis of a solve: 'x' flips X (cell x <-> X-1-x), 'z' flips Z,
+ * 'diag' swaps X and Z (cell (x, z) <-> (z, x)) and 'anti' mirrors across the
+ * other diagonal ((x, z) <-> (Z-1-z, X-1-x)). The diagonals need X = Z.
+ */
+export type MirrorAxis = 'x' | 'z' | 'diag' | 'anti';
 
-/** Side sockets of a mirrored tile: the two faces across the axis swap, and every side profile reverses. */
+/** Per axis, the face of the original tile that lands on each face of its mirror image. */
+const MIRROR_FACES: Record<MirrorAxis, Partial<Record<HFace, HFace>>> = {
+  x: { posX: 'negX', negX: 'posX' },
+  z: { posZ: 'negZ', negZ: 'posZ' },
+  diag: { posX: 'posZ', posZ: 'posX', negX: 'negZ', negZ: 'negX' },
+  anti: { posX: 'negZ', negZ: 'posX', negX: 'posZ', posZ: 'negX' },
+};
+
+/**
+ * A symmetry of a solve: a mirror axis, or a turn about the grid's centre
+ * (viewed from above, clockwise like the tile rotations): 'rot90' makes each
+ * quadrant the one before it turned a quarter, 'rot180' each half the other
+ * turned half way.
+ */
+export type Symmetry = MirrorAxis | 'rot90' | 'rot180';
+
+/** How a symmetry moves a cell; 'rot270' undoes 'rot90'. */
+export type CellTransform = Symmetry | 'rot270';
+
+/**
+ * One constraint of a symmetric solve: `partners[w]` are the variants a cell
+ * may hold when the cell `transform` moves it to holds w.
+ */
+export interface SymmetryConstraint {
+  transform: CellTransform;
+  partners: readonly (readonly number[])[];
+}
+
+/** Whether a symmetry swaps X and Z, so the grid must be square. */
+export function needsSquare(t: CellTransform): boolean {
+  return t === 'diag' || t === 'anti' || t === 'rot90' || t === 'rot270';
+}
+
+/** The cell `t` moves (x, y, z) to; the grid is square where `t` needs it. */
+export function transformCell(size: Readonly<Vec3>, t: CellTransform, [x, y, z]: Readonly<Vec3>): Vec3 {
+  const [X, , Z] = size;
+  switch (t) {
+    case 'x':
+      return [X - 1 - x, y, z];
+    case 'z':
+      return [x, y, Z - 1 - z];
+    case 'diag':
+      return [z, y, x];
+    case 'anti':
+      return [Z - 1 - z, y, X - 1 - x];
+    case 'rot180':
+      return [X - 1 - x, y, Z - 1 - z];
+    // A quarter turn takes the +X neighbour to -Z, like rotateSockets takes posX to negZ.
+    case 'rot90':
+      return [z, y, X - 1 - x];
+    case 'rot270':
+      return [Z - 1 - z, y, x];
+  }
+}
+
+/** Side sockets of a mirrored tile: faces move across the axis, and every side profile reverses. */
 export function mirrorSides(s: Readonly<Sockets>, axis: MirrorAxis): Record<HFace, string | undefined> {
-  const swap: Partial<Record<HFace, HFace>> = axis === 'x' ? { posX: 'negX', negX: 'posX' } : { posZ: 'negZ', negZ: 'posZ' };
+  const swap = MIRROR_FACES[axis];
   const out = {} as Record<HFace, string | undefined>;
   for (const f of H_FACES) {
     const id = s[swap[f] ?? f];
@@ -116,6 +175,29 @@ export function mirrorPartners(variants: readonly Variant[], names: readonly str
   return out;
 }
 
+/** For every variant, the variants of the same prototype with all its sockets turned k quarter turns. */
+export function rotationPartners(variants: readonly Variant[], k: number): number[][] {
+  const key = (s: Sockets) => JSON.stringify(ALL_FACES.map((f) => s[f] ?? null));
+  const keys = variants.map((v) => key(v.sockets));
+  return variants.map((v) => {
+    const want = key(rotateSockets(v.sockets, k));
+    return variants.flatMap((w, j) => (w.proto === v.proto && keys[j] === want ? [j] : []));
+  });
+}
+
+/** The solver constraints for a symmetry; tile names find Mirror tiles for the mirrors. */
+export function symmetryConstraints(variants: readonly Variant[], names: readonly string[], s: Symmetry): SymmetryConstraint[] {
+  // A cell holds w turned back when its turned cell holds w.
+  if (s === 'rot90') {
+    return [
+      { transform: 'rot90', partners: rotationPartners(variants, 3) },
+      { transform: 'rot270', partners: rotationPartners(variants, 1) },
+    ];
+  }
+  if (s === 'rot180') return [{ transform: 'rot180', partners: rotationPartners(variants, 2) }];
+  return [{ transform: s, partners: mirrorPartners(variants, names, s) }];
+}
+
 /** Small seeded PRNG (mulberry32), so a seed always gives the same result. */
 export function rng(seed: number): () => number {
   let a = seed >>> 0;
@@ -141,8 +223,8 @@ export interface WfcOptions {
   top?: string;
   /** Restarts allowed after a contradiction. */
   maxAttempts?: number;
-  /** Mirror the solve across each of these axes (both: four-way symmetry); `partners` from mirrorPartners. */
-  mirrors?: readonly { axis: MirrorAxis; partners: readonly (readonly number[])[] }[];
+  /** Symmetries the solve keeps, from symmetryConstraints; several combine (e.g. two mirrors: four-way). */
+  symmetry?: readonly SymmetryConstraint[];
 }
 
 export interface WfcResult {
@@ -197,15 +279,15 @@ export function solveWfc(variants: Variant[], opts: WfcOptions): WfcResult {
         : opts.outerGround !== undefined && cellCoords(size, c)[1] === 0
           ? opts.outerGround
           : opts.outer) || '';
-  // Per mirror: the mirror cell of each cell (itself on the mirror plane), and the variants allowed opposite each variant.
-  const mirrors = (opts.mirrors ?? []).map(({ axis, partners }) => ({
+  if (opts.symmetry?.some((m) => needsSquare(m.transform)) && size[0] !== size[2]) {
+    throw new Error('Diagonal mirrors and quarter turns need a square grid (X = Z).');
+  }
+  // Per constraint: the cell each cell moves to (itself on a mirror plane or the turning axis) and the allowed variants.
+  const mirrors = (opts.symmetry ?? []).map(({ transform, partners }) => ({
     partners,
-    cell: Int32Array.from({ length: n }, (_, i) => {
-      const [x, y, z] = cellCoords(size, i);
-      return axis === 'x' ? cellIndex(size, size[0] - 1 - x, y, z) : cellIndex(size, x, y, size[2] - 1 - z);
-    }),
+    cell: Int32Array.from({ length: n }, (_, i) => cellIndex(size, ...transformCell(size, transform, cellCoords(size, i)))),
   }));
-  /** The cells a cell maps to under any combination of the mirrors, itself first. */
+  /** The cells a cell moves to under any combination of the symmetries, itself first. */
   const orbit = (c: number) => {
     const out = [c];
     for (let i = 0; i < out.length; i++) for (const m of mirrors) if (!out.includes(m.cell[out[i]])) out.push(m.cell[out[i]]);
