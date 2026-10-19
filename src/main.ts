@@ -45,7 +45,7 @@ import { ALL_FACES, H_FACES, OPPOSITE, rotatePoint, type Face } from './core/pro
 import { plotH, plotV } from './ui/plots';
 import { BACK_FACE_COLOR, FACE_COLORS, Preview } from './ui/preview';
 import { SolutionView, protoColor, type Look } from './ui/solution';
-import { buildVariants, needsSquare, solveWfc, symmetryConstraints, tagFilter, type Symmetry, type WfcResult } from './core/wfc';
+import { buildVariants, needsSquare, solveWeights, solveWfc, symmetryConstraints, tagFilter, type Symmetry, type WfcResult } from './core/wfc';
 import { ICONS, injectIcons } from './ui/icons';
 import { installTooltips } from './ui/tooltip';
 
@@ -54,6 +54,8 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
+
+type List = 'tiles' | 'tags';
 
 /** UI preferences (tab, panel widths, open sections); storage can be unavailable. */
 const prefs = {
@@ -95,6 +97,10 @@ const state = {
   importedName: '',
   importMessages: [] as string[],
   weights: [] as number[],
+  /** Weight per tag; every tile's solve weight is multiplied by those of its tags. Missing: 1. */
+  tagWeights: new Map<string, number>(),
+  /** Which list the outliner shows. */
+  list: 'tiles' as List,
   selected: 0,
   loadError: '',
   unitNote: '',
@@ -539,6 +545,8 @@ function render(resetView: boolean) {
     $('tileCount').textContent = '';
     $('profileCount').textContent = '';
     $('meshes').innerHTML = `<div class="placeholder">${state.raws.length ? 'Fix the axis mapping to analyse the tiles.' : 'No tiles loaded.'}</div>`;
+    $('tagWeights').innerHTML = '<div class="placeholder">No tags.</div>';
+    $('tagCount').textContent = '';
     const errs = [state.loadError, validateMapping(state.settings.axis)].filter(Boolean) as string[];
     renderIssues(errs.map((text) => ({ level: 'error', text })));
     $('statusMsg').textContent = state.raws.length ? '' : 'Ready';
@@ -550,6 +558,7 @@ function render(resetView: boolean) {
   const sockets = currentSockets();
   const unmatched = findUnmatchedFaces(sockets);
   renderMeshes(sockets, unmatched);
+  renderTagWeights(exportJson(a).prototypes);
   renderWarnings(sockets, unmatched);
   const counts = renderIdTables();
   applyTileSearch();
@@ -616,6 +625,33 @@ function renderMeshes(sockets: ReturnType<typeof currentSockets>, unmatched: Fac
         })
         .join('')}</tbody>
     </table>`;
+}
+
+/** Tags with the tiles carrying them, in name order. */
+function tagTiles(protos: readonly Prototype[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const p of protos) for (const t of p.tags ?? []) out.set(t, [...(out.get(t) ?? []), p.mesh_name]);
+  return new Map([...out].sort(([x], [y]) => x.localeCompare(y)));
+}
+
+function renderTagWeights(protos: readonly Prototype[]) {
+  const tags = tagTiles(protos);
+  $('tagWeights').innerHTML = tags.size
+    ? `
+    <table>
+      <thead><tr><th>Tag</th><th class="num" data-tip="Tiles carrying the tag">Tiles</th><th class="num" data-tip="Multiplies the weight of every tile carrying the tag in the solve. 0 = those tiles only as a fallback.">Wt</th></tr></thead>
+      <tbody>${[...tags]
+        .map(
+          ([t, names]) => `
+        <tr class="tag-row" data-tag="${esc(t)}" data-tip="${esc(names.join('\n'))}">
+          <td>${esc(t)}</td>
+          <td class="num">${names.length}</td>
+          <td class="num"><input type="number" class="weight tag-weight" data-tag="${esc(t)}" min="0" step="any" value="${state.tagWeights.get(t) ?? 1}"></td>
+        </tr>`,
+        )
+        .join('')}</tbody>
+    </table>`
+    : '<div class="placeholder">No tiles have tags.</div>';
 }
 
 type Issue = { level: 'error' | 'warn'; text: string };
@@ -810,7 +846,14 @@ function solveAndRender(resetView: boolean) {
     if (out) used.dataset.tip = 'Left out of the solve by the tag filter';
     else delete used.dataset.tip;
   });
-  const variants = buildVariants(protos).filter((v) => kept[v.proto]);
+  const weights = solveWeights(protos, state.tagWeights);
+  document.querySelectorAll<HTMLInputElement>('#meshes input.weight').forEach((input) => {
+    const i = Number(input.dataset.mesh);
+    const td = input.parentElement!;
+    if (weights[i] === protos[i].weight) delete td.dataset.tip;
+    else td.dataset.tip = `Solve weight ${+weights[i].toPrecision(4)}: ${[protos[i].weight, ...(protos[i].tags ?? []).filter((t) => state.tagWeights.has(t)).map((t) => `${t} ${state.tagWeights.get(t)}`)].join(' × ')}`;
+  });
+  const variants = buildVariants(protos.map((p, i) => ({ ...p, weight: weights[i] }))).filter((v) => kept[v.proto]);
   fillSocketLists(variants);
   applyWfcDefaults(a, protos);
   const { size, seed, outer, outerGround, bottom, top } = state.wfc;
@@ -1025,17 +1068,32 @@ $('meshes').addEventListener('change', (e) => {
   }
 });
 
-/** The reset button is only live while some tile's weight differs from 1. */
+$('tagWeights').addEventListener('change', (e) => {
+  const input = e.target as HTMLInputElement;
+  if (!input.classList.contains('tag-weight')) return;
+  const v = Number(input.value);
+  const ok = input.value !== '' && Number.isFinite(v) && v >= 0;
+  input.classList.toggle('invalid', !ok);
+  if (!ok) return;
+  if (v === 1) state.tagWeights.delete(input.dataset.tag!);
+  else state.tagWeights.set(input.dataset.tag!, v);
+  syncResetWeights();
+  solveAndRender(false);
+});
+
+/** The reset button is only live while some weight in the shown list differs from 1. */
 function syncResetWeights() {
   const n = state.analysis?.meshes.length ?? 0;
-  $<HTMLButtonElement>('resetWeights').disabled = !state.weights.slice(0, n).some((w) => (w ?? 1) !== 1);
+  const changed = state.list === 'tags' ? state.tagWeights.size > 0 : state.weights.slice(0, n).some((w) => (w ?? 1) !== 1);
+  $<HTMLButtonElement>('resetWeights').disabled = !changed;
 }
 
 $('resetWeights').addEventListener('click', () => {
   const a = state.analysis;
   if (!a) return;
-  for (const m of a.meshes) state.weights[m.index] = 1;
-  document.querySelectorAll<HTMLInputElement>('input.weight').forEach((input) => {
+  if (state.list === 'tags') state.tagWeights.clear();
+  else for (const m of a.meshes) state.weights[m.index] = 1;
+  document.querySelectorAll<HTMLInputElement>(state.list === 'tags' ? '#tagWeights input.weight' : '#meshes input.weight').forEach((input) => {
     input.value = '1';
     input.classList.remove('invalid');
   });
@@ -1107,6 +1165,22 @@ window.addEventListener('drop', (e) => {
 
 // ---------------------------------------------------------------- shell
 
+/** Show the tiles or the tags in the outliner; remembered between sessions. */
+function setList(next: List) {
+  state.list = next;
+  document.querySelectorAll<HTMLElement>('.list-tab').forEach((el) => {
+    const on = el.dataset.list === next;
+    el.classList.toggle('active', on);
+    el.setAttribute('aria-selected', String(on));
+  });
+  $('meshes').hidden = next !== 'tiles';
+  $('tagWeights').hidden = next !== 'tags';
+  syncResetWeights();
+  prefs.set('list', next);
+}
+document.querySelectorAll<HTMLElement>('.list-tab').forEach((el) => el.addEventListener('click', () => setList(el.dataset.list as List)));
+setList(prefs.get('list') === 'tags' ? 'tags' : 'tiles');
+
 type Tab = 'solve' | 'profiles';
 const TABS: Tab[] = ['solve', 'profiles'];
 
@@ -1146,20 +1220,30 @@ function rerollSeed() {
   if (readWfcInputs()) solveAndRender(false);
 }
 
-/** Show only the tiles list rows whose name or tags contain every word of the search, ignoring case. */
+/**
+ * Show only the rows whose text contains every word of the search, ignoring
+ * case: a tile's name and tags, or a tag and the names of its tiles.
+ */
 function applyTileSearch() {
   const a = state.analysis;
   if (!a) return;
   const words = $<HTMLInputElement>('tileSearch').value.toLowerCase().split(/\s+/).filter(Boolean);
-  let shown = 0;
-  document.querySelectorAll<HTMLElement>('tr.mesh-row').forEach((row) => {
+  const filter = (rows: NodeListOf<HTMLElement>, text: (row: HTMLElement) => string) => {
+    let shown = 0;
+    rows.forEach((row) => {
+      const t = text(row).toLowerCase();
+      row.hidden = !words.every((w) => t.includes(w));
+      if (!row.hidden) shown++;
+    });
+    return words.length ? `${shown} / ${rows.length}` : String(rows.length);
+  };
+  $('tileCount').textContent = filter(document.querySelectorAll('tr.mesh-row'), (row) => {
     const m = a.meshes[Number(row.dataset.mesh)];
-    const text = [meshLabel(m), ...prototypeTags(m.name, importedTags(m.name))].join(' ').toLowerCase();
-    const hit = words.every((w) => text.includes(w));
-    row.hidden = !hit;
-    if (hit) shown++;
+    return [meshLabel(m), ...prototypeTags(m.name, importedTags(m.name))].join(' ');
   });
-  $('tileCount').textContent = words.length ? `${shown} / ${a.meshes.length}` : String(a.meshes.length);
+  const tagRows = document.querySelectorAll<HTMLElement>('tr.tag-row');
+  const tagCount = filter(tagRows, (row) => `${row.dataset.tag} ${row.dataset.tip}`);
+  $('tagCount').textContent = tagRows.length ? tagCount : '';
 }
 $('tileSearch').addEventListener('input', applyTileSearch);
 $('tileSearch').addEventListener('keydown', (e) => {

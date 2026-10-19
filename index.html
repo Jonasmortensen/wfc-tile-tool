@@ -158,13 +158,18 @@
 
       <aside id="outliner">
         <div id="tileList">
-          <div class="panel-head">Tiles <span id="tileCount" class="badge"></span>
+          <div class="panel-head">
+            <div class="list-tabs" role="tablist">
+              <button class="list-tab" role="tab" data-list="tiles" data-tip="Every tile with its sockets and weight">Tiles <span id="tileCount" class="badge"></span></button>
+              <button class="list-tab" role="tab" data-list="tags" data-tip="Tags from the tile names, each with a weight that multiplies the weight of every tile carrying it">Tags <span id="tagCount" class="badge"></span></button>
+            </div>
             <label class="search" data-icon="search" data-tip="Filter the list by name or tag (/)">
               <input id="tileSearch" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search tiles">
             </label>
-            <button id="resetWeights" class="icon-btn small" data-icon="reset" data-tip="Reset all weights to 1" aria-label="Reset weights" disabled></button>
+            <button id="resetWeights" class="icon-btn small" data-icon="reset" data-tip="Reset all weights in this list to 1" aria-label="Reset weights" disabled></button>
           </div>
           <div id="meshes"></div>
+          <div id="tagWeights" hidden></div>
         </div>
         <div class="hsplitter"></div>
         <div id="tilePanel">

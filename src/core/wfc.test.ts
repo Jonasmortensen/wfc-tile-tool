@@ -8,6 +8,7 @@ import {
   cellIndex,
   mirrorPartners,
   mirrorSides,
+  solveWeights,
   solveWfc,
   symmetryConstraints,
   tagFilter,
@@ -313,6 +314,15 @@ describe('mirror', () => {
       }
     }
     expect(solveWfc(variants, { size: [5, 1, 4], seed: 1, maxAttempts: 2, symmetry: [{ transform: 'x', partners }] }).ok).toBe(false);
+  });
+});
+
+describe('solveWeights', () => {
+  it('multiplies the tile weight by the weight of each of its tags', () => {
+    const protos = [{ weight: 2, tags: ['Wall', 'Corner'] }, { weight: 1, tags: ['Wall'] }, { weight: 3 }, { weight: 0, tags: ['Corner'] }];
+    const tagWeights = new Map([['Wall', 0.5], ['Corner', 4]]);
+    expect(solveWeights(protos, tagWeights)).toEqual([4, 0.5, 3, 0]);
+    expect(solveWeights(protos, new Map())).toEqual([2, 1, 3, 0]);
   });
 });
 

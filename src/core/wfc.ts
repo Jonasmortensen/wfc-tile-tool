@@ -59,6 +59,14 @@ export function tagFilter(protos: readonly Pick<Prototype, 'tags'>[], hidden: Re
   return protos.map((p) => !p.tags?.some((t) => hidden.has(t)));
 }
 
+/** Each prototype's weight in the solve: its own weight times the weight of each of its tags (1 when not given). */
+export function solveWeights(
+  protos: readonly Pick<Prototype, 'weight' | 'tags'>[],
+  tagWeights: ReadonlyMap<string, number>,
+): number[] {
+  return protos.map((p) => (p.tags ?? []).reduce((w, t) => w * (tagWeights.get(t) ?? 1), p.weight));
+}
+
 /** compat[face][a] = variants that may sit next to variant a on its `face` side. */
 export function compatibility(variants: readonly Variant[]): Record<Face, number[][]> {
   const out = {} as Record<Face, number[][]>;
